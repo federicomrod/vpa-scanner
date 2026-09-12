@@ -18,17 +18,21 @@ place before any real scanning logic is written. Concretely, that means:
 
 - The project's folder layout, dependencies, and safety rules
   (`CLAUDE.md`) exist.
+- Settings now load from `config.yaml`, and there's a "hello world"
+  version of the pipeline that generates three hardcoded, clearly-fake
+  candidate rows and stamps them with tracking information (which code
+  version produced them, which configuration was used).
 - The actual "look at stock data and find patterns" logic does **not**
   exist yet - it comes in a later milestone, once the specification
   documents in `docs/` are finalised.
-- Once complete, this milestone will run a "hello world" version of the
-  full pipeline using fake, clearly-labelled data: it will generate a
-  fake report, save it, and send it out by email and push notification,
-  just to prove every piece of the plumbing works end to end.
+- Still to come in this milestone: turning that data into an actual
+  report you can read, and sending it out by email and push
+  notification - see the folder guide below for where those will live.
 
-Because there's no real logic yet, there is nothing to run day-to-day
-at this point. The sections below describe how the project is organised
-and how it will be run once later pull requests fill it in.
+Because report generation and delivery aren't built yet, there is
+nothing to run day-to-day at this point. The sections below describe
+how the project is organised and how it will be run once later pull
+requests fill it in.
 
 ## How it's organised
 
@@ -55,9 +59,11 @@ so nothing needs to be installed by hand.
 - Run the automated tests: `uv run pytest`
 - Check the code style: `uv run ruff check .`
 
-There is no scan to run yet - `src/vpa/pipeline.py` is still an empty
-placeholder. Once it's implemented (starting with fake data, later with
-real data), this section will be updated with the actual command.
+There's no single command to run a scan yet - `src/vpa/pipeline.py` can
+assemble a fake result internally (used by the automated tests), but
+nothing turns that into a report you'd actually read, or sends it
+anywhere. That's the next couple of pull requests. This section will be
+updated with the actual command once that exists.
 
 ## A note on safety
 

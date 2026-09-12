@@ -1,0 +1,6 @@
+# A sample config.yaml used by tests. Not the real project configuration
+# - see config.yaml at the repository root for that.
+config_version: "test-1"
+
+report:
+  output_dir: "reports"

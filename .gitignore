@@ -5,12 +5,14 @@
 !.env.example
 
 # Market data and anything derived from it
+# (leading slash: only the folders at the repository root, so this never
+# accidentally hides the src/vpa/data/ *code* package)
 *.parquet
-data/
-holdout/
+/data/
+/holdout/
 
 # Generated output (reports are meant to be emailed, not committed)
-reports/
+/reports/
 
 # --- Python ---
 __pycache__/
