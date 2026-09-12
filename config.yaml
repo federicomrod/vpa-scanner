@@ -1,0 +1,14 @@
+# vpa-scanner configuration.
+#
+# This file holds non-secret settings only. Secrets (email passwords,
+# webhook URLs, etc.) will be supplied as environment variables when
+# email/push delivery is built - never put a secret in this file.
+#
+# Bump config_version by hand whenever you change what a setting here
+# means (not just its value) - it gets stamped on every report so you
+# can tell which configuration produced it.
+config_version: "0.1.0"
+
+report:
+  # Where generated reports are written, relative to the project root.
+  output_dir: "reports"

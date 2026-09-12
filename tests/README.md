@@ -10,4 +10,4 @@ Two rules that apply to every test in this folder:
    tests. See CLAUDE.md at the repository root for why.
 2. Tests use the sample data in `fixtures/`, never real market data.
 
-Test files will be added starting in Milestone 1, step 2.
+Run them with `uv run pytest`.
