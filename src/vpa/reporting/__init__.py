@@ -1,6 +1,11 @@
 """Report rendering.
 
-Will hold the code that turns scan results into the Markdown report and
-JSON record that get emailed each morning. Empty in Milestone 1; built in
-a later pull request.
+Turns a scan result into the Markdown report and JSON record that
+(eventually) get emailed each morning. See report.py for the actual
+rendering code - delivery (sending them anywhere) is a separate, later
+pull request.
 """
+
+from vpa.reporting.report import ReportPaths, render_json, render_markdown, write_report
+
+__all__ = ["ReportPaths", "render_json", "render_markdown", "write_report"]

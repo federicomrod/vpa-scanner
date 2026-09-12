@@ -20,19 +20,21 @@ place before any real scanning logic is written. Concretely, that means:
   (`CLAUDE.md`) exist.
 - Settings now load from `config.yaml`, and there's a "hello world"
   version of the pipeline that generates three hardcoded, clearly-fake
-  candidate rows and stamps them with tracking information (which code
-  version produced them, which configuration was used).
+  candidate rows, stamps them with tracking information (which code
+  version produced them, which configuration was used), and writes an
+  actual Markdown report plus a matching JSON file to a `reports/`
+  folder.
 - The actual "look at stock data and find patterns" logic does **not**
   exist yet - it comes in a later milestone, once the specification
   documents in `docs/` are finalised.
-- Still to come in this milestone: turning that data into an actual
-  report you can read, and sending it out by email and push
-  notification - see the folder guide below for where those will live.
+- Still to come in this milestone: actually sending that report out by
+  email and push notification - see the folder guide below for where
+  that will live.
 
-Because report generation and delivery aren't built yet, there is
-nothing to run day-to-day at this point. The sections below describe
-how the project is organised and how it will be run once later pull
-requests fill it in.
+Because delivery isn't built yet, there's no single command that does
+the whole job end to end. The sections below describe how the project
+is organised and how it will be run once the next pull request fills
+that in.
 
 ## How it's organised
 
@@ -42,7 +44,7 @@ requests fill it in.
 | `docs/` | The design documents that describe exactly what a "candidate" is and how the whole system is put together. These are the source of truth. |
 | `src/vpa/signal/` | The **frozen specification area** - the actual pattern-detection logic, once it exists. Changes here are deliberately made hard to slip in by accident (see `CLAUDE.md`). |
 | `src/vpa/data/` | Code that will load stock market data. |
-| `src/vpa/reporting/` | Code that turns results into the emailed report. |
+| `src/vpa/reporting/` | Turns results into the Markdown report and JSON file that (eventually) get emailed. |
 | `src/vpa/reviewer/` | Anything that supports the human trader's own review process. |
 | `src/vpa/config.py` | Loads settings from `config.yaml` and the environment. |
 | `src/vpa/pipeline.py` | Ties everything together: run the scan, build the report, send it out. |
@@ -59,11 +61,23 @@ so nothing needs to be installed by hand.
 - Run the automated tests: `uv run pytest`
 - Check the code style: `uv run ruff check .`
 
-There's no single command to run a scan yet - `src/vpa/pipeline.py` can
-assemble a fake result internally (used by the automated tests), but
-nothing turns that into a report you'd actually read, or sends it
-anywhere. That's the next couple of pull requests. This section will be
-updated with the actual command once that exists.
+There's no single command to run a full scan yet, since delivery isn't
+built. But you can see the pipeline produce a real (fake-data) report
+right now:
+
+```
+uv run python -c "
+from pathlib import Path
+from vpa.config import load_config
+from vpa.pipeline import run_and_write_report
+print(run_and_write_report(load_config(Path('config.yaml'))))
+"
+```
+
+That writes a Markdown report and a matching JSON file into `reports/`
+(a folder that's never committed to git - see `.gitignore`), using
+today's date as the filename. This section will be updated with a
+proper command once delivery is built.
 
 ## A note on safety
 

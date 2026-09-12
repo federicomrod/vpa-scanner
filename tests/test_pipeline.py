@@ -6,6 +6,7 @@ or the internet.
 """
 
 import subprocess
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from vpa.pipeline import (
     PipelineError,
     get_git_commit_sha,
     hash_signal_spec,
+    run_and_write_report,
     run_pipeline,
 )
 
@@ -85,3 +87,46 @@ def test_run_pipeline_assembles_a_complete_scan_result(tmp_path):
     assert result.metadata.config_version == "test-config-version"
     assert result.metadata.model_version == MODEL_VERSION_PLACEHOLDER
     assert len(result.candidates) == 3
+
+
+def test_run_and_write_report_writes_files_under_configured_output_dir(tmp_path):
+    _init_throwaway_git_repo(tmp_path)
+    signal_dir = tmp_path / "signal"
+    signal_dir.mkdir()
+    (signal_dir / "__init__.py").write_text("# frozen spec placeholder\n")
+
+    config = AppConfig(config_version="test-config-version")
+    config.report.output_dir = Path("reports")  # relative - resolved against repo_root
+
+    paths = run_and_write_report(
+        config,
+        repo_root=tmp_path,
+        signal_dir=signal_dir,
+        report_date=date(2026, 1, 15),
+    )
+
+    assert paths.markdown_path == tmp_path / "reports" / "2026-01-15.md"
+    assert paths.json_path == tmp_path / "reports" / "2026-01-15.json"
+    assert paths.markdown_path.exists()
+    assert paths.json_path.exists()
+    assert "FAKE DATA" in paths.markdown_path.read_text()
+
+
+def test_run_and_write_report_respects_absolute_output_dir(tmp_path):
+    _init_throwaway_git_repo(tmp_path)
+    signal_dir = tmp_path / "signal"
+    signal_dir.mkdir()
+    (signal_dir / "__init__.py").write_text("# frozen spec placeholder\n")
+
+    elsewhere = tmp_path / "elsewhere"
+    config = AppConfig(config_version="test-config-version")
+    config.report.output_dir = elsewhere
+
+    paths = run_and_write_report(
+        config,
+        repo_root=tmp_path,
+        signal_dir=signal_dir,
+        report_date=date(2026, 1, 15),
+    )
+
+    assert paths.markdown_path.parent == elsewhere

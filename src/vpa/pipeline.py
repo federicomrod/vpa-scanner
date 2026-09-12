@@ -1,13 +1,11 @@
 """The hello-world pipeline.
 
-Ties configuration and (for now, fake) candidate data together, and
-computes the provenance metadata every report must carry: the exact code
-that produced it (git commit SHA and a hash of the frozen signal
-specification), which configuration version was used, and a placeholder
-for a model version.
+Ties configuration and (for now, fake) candidate data together, computes
+the provenance metadata every report must carry, and writes the report
+files to disk.
 
-Report rendering and delivery (email, push, dead-man's-switch) are not
-implemented yet - they're separate, later pull requests.
+Delivery (email, push, dead-man's-switch) is not implemented yet -
+that's a separate, later pull request.
 
 No market data, no AI calls, and no pattern logic will ever be added
 here directly - see CLAUDE.md.
@@ -17,12 +15,13 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from datetime import date
 from pathlib import Path
 
-from pydantic import BaseModel
-
 from vpa.config import AppConfig
-from vpa.data.fake import FakeCandidate, generate_fake_candidates
+from vpa.data.fake import generate_fake_candidates
+from vpa.models import ScanMetadata, ScanResult
+from vpa.reporting.report import ReportPaths, write_report
 
 #: There is no model in this milestone - report metadata always carries
 #: this placeholder instead of a real model version.
@@ -34,22 +33,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: The frozen signal specification area (see CLAUDE.md).
 SIGNAL_DIR = REPO_ROOT / "src" / "vpa" / "signal"
-
-
-class ScanMetadata(BaseModel):
-    """Provenance information every report must carry."""
-
-    git_commit_sha: str
-    signal_spec_hash: str
-    config_version: str
-    model_version: str
-
-
-class ScanResult(BaseModel):
-    """Everything the (future) report renderer needs."""
-
-    metadata: ScanMetadata
-    candidates: list[FakeCandidate]
 
 
 class PipelineError(Exception):
@@ -101,9 +84,7 @@ def run_pipeline(
     """Run the hello-world pipeline.
 
     Gathers (fake, for now) candidates and assembles the provenance
-    metadata every report must carry. Report rendering and delivery are
-    separate pull requests - this function only produces the data they
-    will need.
+    metadata every report must carry.
     """
     metadata = ScanMetadata(
         git_commit_sha=get_git_commit_sha(repo_root),
@@ -113,3 +94,26 @@ def run_pipeline(
     )
     candidates = generate_fake_candidates()
     return ScanResult(metadata=metadata, candidates=candidates)
+
+
+def _resolve_output_dir(repo_root: Path, output_dir: Path) -> Path:
+    """`output_dir` from config is relative to `repo_root` unless it's
+    already an absolute path."""
+    return output_dir if output_dir.is_absolute() else repo_root / output_dir
+
+
+def run_and_write_report(
+    config: AppConfig,
+    *,
+    repo_root: Path = REPO_ROOT,
+    signal_dir: Path = SIGNAL_DIR,
+    report_date: date | None = None,
+) -> ReportPaths:
+    """Run the pipeline and write its report (Markdown + JSON) to disk.
+
+    Delivery (email, push, dead-man's-switch) is not implemented yet -
+    see CLAUDE.md and the Milestone 1 plan.
+    """
+    result = run_pipeline(config, repo_root=repo_root, signal_dir=signal_dir)
+    output_dir = _resolve_output_dir(repo_root, config.report.output_dir)
+    return write_report(result, output_dir, report_date or date.today())
