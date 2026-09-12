@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fakes import FakeDeadManSwitch, FakeEmailSender, FakePushSender
 from vpa.config import AppConfig
 from vpa.pipeline import (
     MODEL_VERSION_PLACEHOLDER,
@@ -19,6 +20,7 @@ from vpa.pipeline import (
     hash_signal_spec,
     run_and_write_report,
     run_pipeline,
+    run_scan,
 )
 
 
@@ -130,3 +132,65 @@ def test_run_and_write_report_respects_absolute_output_dir(tmp_path):
     )
 
     assert paths.markdown_path.parent == elsewhere
+
+
+def _make_config_and_dirs(tmp_path: Path) -> AppConfig:
+    _init_throwaway_git_repo(tmp_path)
+    signal_dir = tmp_path / "signal"
+    signal_dir.mkdir()
+    (signal_dir / "__init__.py").write_text("# frozen spec placeholder\n")
+    return AppConfig(config_version="test-config-version")
+
+
+def test_run_scan_success_delivers_report_and_pings_success(tmp_path):
+    config = _make_config_and_dirs(tmp_path)
+    email_sender = FakeEmailSender()
+    push_sender = FakePushSender()
+    deadman = FakeDeadManSwitch()
+
+    paths = run_scan(
+        config,
+        email_sender=email_sender,
+        push_sender=push_sender,
+        deadman=deadman,
+        repo_root=tmp_path,
+        signal_dir=tmp_path / "signal",
+        report_date=date(2026, 1, 15),
+    )
+
+    assert paths.markdown_path.exists()
+    assert len(email_sender.sent) == 1
+    subject, body = email_sender.sent[0]
+    assert subject == "VPA Scanner report - 2026-01-15"
+    assert "FAKE DATA" in body
+    assert len(push_sender.sent) == 1
+    assert "3 candidate(s)" in push_sender.sent[0]
+    assert deadman.pinged_success is True
+    assert deadman.pinged_fail is False
+
+
+def test_run_scan_failure_sends_scan_unavailable_and_pings_fail(tmp_path):
+    config = _make_config_and_dirs(tmp_path)
+    email_sender = FakeEmailSender()
+    push_sender = FakePushSender()
+    deadman = FakeDeadManSwitch()
+
+    with pytest.raises(PipelineError):
+        run_scan(
+            config,
+            email_sender=email_sender,
+            push_sender=push_sender,
+            deadman=deadman,
+            repo_root=tmp_path,
+            signal_dir=tmp_path / "does-not-exist",
+            report_date=date(2026, 1, 15),
+        )
+
+    assert len(email_sender.sent) == 1
+    subject, body = email_sender.sent[0]
+    assert subject == "SCAN UNAVAILABLE - 2026-01-15"
+    assert "Signal directory not found" in body
+    assert len(push_sender.sent) == 1
+    assert "SCAN UNAVAILABLE" in push_sender.sent[0]
+    assert deadman.pinged_fail is True
+    assert deadman.pinged_success is False
