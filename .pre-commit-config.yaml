@@ -1,0 +1,21 @@
+# Pre-commit hooks: run automatically on `git commit` once installed.
+#
+# Non-developer note: you don't need to know what any of this means to
+# use the project. Once someone has run `pre-commit install` in this
+# repo, these checks just happen automatically before each commit and
+# either pass silently or tell you what to fix.
+repos:
+  # Lints and auto-formats Python code.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Scans the commit for things that look like passwords, API keys, or
+  # other secrets, so they never make it into git history.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

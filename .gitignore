@@ -1,0 +1,59 @@
+# --- Project-specific: never commit these ---
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Market data and anything derived from it
+*.parquet
+data/
+holdout/
+
+# Generated output (reports are meant to be emailed, not committed)
+reports/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test / lint / type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# uv
+# (the lockfile itself, uv.lock, IS committed on purpose - do not ignore it)
+.uv-cache/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
