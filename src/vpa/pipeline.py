@@ -1,11 +1,12 @@
 """The hello-world pipeline.
 
-Ties configuration and (for now, fake) candidate data together, computes
-the provenance metadata every report must carry, and writes the report
-files to disk.
+Ties everything together: configuration, (for now, fake) candidate
+data, the provenance metadata every report must carry, writing the
+report to disk, and sending it out by email, push, and a dead-man's-
+switch ping.
 
-Delivery (email, push, dead-man's-switch) is not implemented yet -
-that's a separate, later pull request.
+If any step fails, "SCAN UNAVAILABLE" is sent instead of a partial
+report - see CLAUDE.md ("fail loudly, never partially").
 
 No market data, no AI calls, and no pattern logic will ever be added
 here directly - see CLAUDE.md.
@@ -20,6 +21,9 @@ from pathlib import Path
 
 from vpa.config import AppConfig
 from vpa.data.fake import generate_fake_candidates
+from vpa.delivery.deadman import DeadManSwitch
+from vpa.delivery.email import EmailSender
+from vpa.delivery.push import PushSender
 from vpa.models import ScanMetadata, ScanResult
 from vpa.reporting.report import ReportPaths, write_report
 
@@ -111,9 +115,75 @@ def run_and_write_report(
 ) -> ReportPaths:
     """Run the pipeline and write its report (Markdown + JSON) to disk.
 
-    Delivery (email, push, dead-man's-switch) is not implemented yet -
-    see CLAUDE.md and the Milestone 1 plan.
+    Delivery (email, push, dead-man's-switch) is not part of this
+    function - see `run_scan` for the full, deliver-it-too version.
     """
     result = run_pipeline(config, repo_root=repo_root, signal_dir=signal_dir)
     output_dir = _resolve_output_dir(repo_root, config.report.output_dir)
     return write_report(result, output_dir, report_date or date.today())
+
+
+def _send_success(
+    report_date: date,
+    result: ScanResult,
+    paths: ReportPaths,
+    email_sender: EmailSender,
+    push_sender: PushSender,
+    deadman: DeadManSwitch,
+) -> None:
+    email_sender.send(
+        subject=f"VPA Scanner report - {report_date.isoformat()}",
+        body=paths.markdown_path.read_text(),
+    )
+    push_sender.send(
+        f"VPA scan {report_date.isoformat()}: {len(result.candidates)} candidate(s) "
+        "(FAKE DATA - Milestone 1)."
+    )
+    deadman.ping_success()
+
+
+def _send_failure(
+    report_date: date,
+    error: Exception,
+    email_sender: EmailSender,
+    push_sender: PushSender,
+    deadman: DeadManSwitch,
+) -> None:
+    email_sender.send(
+        subject=f"SCAN UNAVAILABLE - {report_date.isoformat()}",
+        body=f"The scan failed and produced no report.\n\nError:\n{error}",
+    )
+    push_sender.send(f"SCAN UNAVAILABLE ({report_date.isoformat()}): {error}")
+    deadman.ping_fail()
+
+
+def run_scan(
+    config: AppConfig,
+    *,
+    email_sender: EmailSender,
+    push_sender: PushSender,
+    deadman: DeadManSwitch,
+    repo_root: Path = REPO_ROOT,
+    signal_dir: Path = SIGNAL_DIR,
+    report_date: date | None = None,
+) -> ReportPaths:
+    """Run the full hello-world scan and deliver it: build the report,
+    email it, push a one-line summary, and ping the dead-man's-switch.
+
+    If any step before delivery fails, sends "SCAN UNAVAILABLE" with the
+    error by email and push instead of a partial report, pings the
+    dead-man's-switch failure URL, and re-raises the original error so
+    the caller (the supervisor script) knows the run failed.
+    """
+    resolved_date = report_date or date.today()
+
+    try:
+        result = run_pipeline(config, repo_root=repo_root, signal_dir=signal_dir)
+        output_dir = _resolve_output_dir(repo_root, config.report.output_dir)
+        paths = write_report(result, output_dir, resolved_date)
+    except Exception as exc:
+        _send_failure(resolved_date, exc, email_sender, push_sender, deadman)
+        raise
+
+    _send_success(resolved_date, result, paths, email_sender, push_sender, deadman)
+    return paths
