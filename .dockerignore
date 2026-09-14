@@ -1,0 +1,18 @@
+# Keep the image lean and avoid ever baking in secrets or local state -
+# mirrors .gitignore, plus a few things that are fine to commit but
+# have no business inside the image.
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+reports/
+data/
+holdout/
+.env
+.env.*
+*.parquet
+.DS_Store
