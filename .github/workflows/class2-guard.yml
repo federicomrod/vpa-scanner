@@ -1,0 +1,63 @@
+name: Class 2 guard
+
+# Enforces CLAUDE.md rule 2: src/vpa/signal/ is the frozen specification
+# area. A pull request that changes anything in it must reference an
+# experiment-ledger entry in its description, or this check fails with
+# an explanation of why. This is intentional friction, not a bug.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check-ledger-entry:
+    name: Ledger entry required for signal/ changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check whether this PR touches the frozen signal folder
+        id: changed
+        run: |
+          CHANGED_SIGNAL_FILES="$(git diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            -- src/vpa/signal/)"
+          if [[ -n "$CHANGED_SIGNAL_FILES" ]]; then
+            echo "touches_signal=true" >> "$GITHUB_OUTPUT"
+            echo "This pull request changes the following file(s) under src/vpa/signal/:"
+            echo "$CHANGED_SIGNAL_FILES"
+          else
+            echo "touches_signal=false" >> "$GITHUB_OUTPUT"
+            echo "This pull request does not touch src/vpa/signal/ - nothing to check."
+          fi
+
+      - name: Require a Ledger entry in the PR description
+        if: steps.changed.outputs.touches_signal == 'true'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if echo "$PR_BODY" | grep -qE 'Ledger: LEDGER-[0-9]+'; then
+            echo "Found a matching 'Ledger: LEDGER-<number>' line in the PR description - OK."
+          else
+            cat <<'EOF'
+          This pull request changes a file under src/vpa/signal/ - the
+          frozen specification area (see CLAUDE.md, rule 2). Changing
+          anything there requires an experiment-ledger entry, referenced
+          in this pull request's description as a line matching:
+
+              Ledger: LEDGER-<number>
+
+          Add that line to the PR description (you can edit it on GitHub
+          without pushing a new commit) and this check will pass. This
+          is a deliberate safeguard, not a bug to work around - if you
+          don't have a ledger entry yet, that's a sign this change needs
+          one before it merges.
+          EOF
+            exit 1
+          fi

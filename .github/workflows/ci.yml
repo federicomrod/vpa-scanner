@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# CI needs zero secrets - see CLAUDE.md. If a task ever seems to need a
+# credential here, that's a design problem to raise with the project
+# owner, not something to work around.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Check formatting (ruff format)
+        run: uv run ruff format --check .
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Run tests
+        run: uv run pytest
+
+  docker:
+    name: Build Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Build image
+        run: docker build -t vpa-scanner:ci .
+
+      - name: Smoke-test the built image
+        # No secrets needed: this only proves the project actually
+        # installs and imports cleanly inside a real Linux container -
+        # the whole point of keeping a Dockerfile at all (see
+        # README.md - it's migration insurance, not a local workflow).
+        run: |
+          docker run --rm vpa-scanner:ci python -c "
+          import vpa.cli
+          import vpa.config
+          import vpa.pipeline
+          import vpa.trading_calendar
+          import vpa.reporting.report
+          import vpa.delivery.email
+          import vpa.delivery.push
+          import vpa.delivery.deadman
+          print('All modules imported successfully inside the container.')
+          "

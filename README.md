@@ -32,14 +32,20 @@ place before any real scanning logic is written. Concretely, that means:
   the scan silently stopped running. See "Setting up delivery" below
   for the one-time setup this needs before it can actually send you
   anything for real.
-- There's now a supervisor script (`scripts/run_scan.sh`) meant to be
-  the one thing a scheduled job calls each morning: it makes sure two
-  scans never overlap, skips non-trading days, only runs from a
-  released version of the code, retries if something transient goes
-  wrong, and always tells you the outcome one way or another.
+- There's a supervisor script (`scripts/run_scan.sh`) meant to be the
+  one thing a scheduled job calls each morning: it makes sure two scans
+  never overlap, skips non-trading days, only runs from a released
+  version of the code, retries if something transient goes wrong, and
+  always tells you the outcome one way or another.
+- **Milestone 1 is now complete.** Every pull request to this project
+  is automatically checked by GitHub (tests, code style, and a Docker
+  build) before it can be merged, and a special check blocks any change
+  to the frozen pattern-detection folder unless it's explicitly signed
+  off - see "Automatic checks" below.
 
 The sections below describe how the project is organised, what you
-need to set up for delivery to work, and how to actually run it.
+need to set up for delivery to work, how to actually run it, and what
+happens automatically on every pull request.
 
 ## How it's organised
 
@@ -59,6 +65,8 @@ need to set up for delivery to work, and how to actually run it.
 | `tests/` | Automated checks that the code does what it's supposed to, using fake data - no real market data or internet connection involved. |
 | `fixtures/` | Small fake sample data files used by the tests. |
 | `scripts/run_scan.sh` | The supervisor script a scheduled job (cron, launchd, ...) actually calls each morning. |
+| `.github/workflows/` | The automatic checks GitHub runs on every pull request - see "Automatic checks" below. |
+| `Dockerfile` | Proves the project can run as a container on Linux. Migration insurance only - nobody needs Docker to develop or run this day to day. |
 
 ## Setting up delivery (email, push notifications, monitoring)
 
@@ -178,6 +186,26 @@ always one you (or a reviewer) deliberately marked as ready, never
 whatever's mid-edit. To update what the live version runs, merge your
 changes to `main` as usual, then create a new tag on the commit you
 want to promote (`git tag v0.1.1 && git push origin v0.1.1`).
+
+## Automatic checks
+
+Every pull request to this project (including ones opened by Claude) is
+checked automatically by GitHub before it can be merged. You'll see
+these show up as checks at the bottom of a pull request on GitHub:
+
+- **CI** - installs the project, checks the code style, runs every
+  automated test, and builds (and briefly runs) the Docker image. None
+  of this needs any of your private secrets - if a change ever seems to
+  need one here, that's flagged as a design problem to fix, not
+  something to add.
+- **Class 2 guard** - specifically watches `src/vpa/signal/`, the
+  frozen pattern-detection folder (see `CLAUDE.md`). If a pull request
+  changes anything in there, this check fails unless the pull request's
+  description contains a line like `Ledger: LEDGER-42` - a reference to
+  a deliberate, recorded decision to change the frozen specification,
+  not an accidental edit made in passing. You (or whoever opens such a
+  pull request) can add that line to the description at any time,
+  without needing a new commit, and the check re-runs automatically.
 
 ## A note on safety
 
