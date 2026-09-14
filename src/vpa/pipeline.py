@@ -100,7 +100,7 @@ def run_pipeline(
     return ScanResult(metadata=metadata, candidates=candidates)
 
 
-def _resolve_output_dir(repo_root: Path, output_dir: Path) -> Path:
+def resolve_output_dir(repo_root: Path, output_dir: Path) -> Path:
     """`output_dir` from config is relative to `repo_root` unless it's
     already an absolute path."""
     return output_dir if output_dir.is_absolute() else repo_root / output_dir
@@ -119,41 +119,52 @@ def run_and_write_report(
     function - see `run_scan` for the full, deliver-it-too version.
     """
     result = run_pipeline(config, repo_root=repo_root, signal_dir=signal_dir)
-    output_dir = _resolve_output_dir(repo_root, config.report.output_dir)
+    output_dir = resolve_output_dir(repo_root, config.report.output_dir)
     return write_report(result, output_dir, report_date or date.today())
 
 
-def _send_success(
+def send_success(
     report_date: date,
-    result: ScanResult,
-    paths: ReportPaths,
+    candidate_count: int,
+    markdown_body: str,
     email_sender: EmailSender,
     push_sender: PushSender,
     deadman: DeadManSwitch,
 ) -> None:
+    """Send the real report by email and push, and ping the dead-man's-
+    switch success URL.
+
+    Takes the rendered Markdown and a candidate count rather than a
+    ScanResult/ReportPaths, so it works whether the report was just
+    built in this same process (`run_scan`) or was written by an
+    earlier, separate process and is being read back off disk
+    (scripts/run_scan.sh's `deliver` step, via src/vpa/cli.py).
+    """
     email_sender.send(
         subject=f"VPA Scanner report - {report_date.isoformat()}",
-        body=paths.markdown_path.read_text(),
+        body=markdown_body,
     )
     push_sender.send(
-        f"VPA scan {report_date.isoformat()}: {len(result.candidates)} candidate(s) "
+        f"VPA scan {report_date.isoformat()}: {candidate_count} candidate(s) "
         "(FAKE DATA - Milestone 1)."
     )
     deadman.ping_success()
 
 
-def _send_failure(
+def send_failure(
     report_date: date,
-    error: Exception,
+    error_message: str,
     email_sender: EmailSender,
     push_sender: PushSender,
     deadman: DeadManSwitch,
 ) -> None:
+    """Send "SCAN UNAVAILABLE" with `error_message` by email and push,
+    and ping the dead-man's-switch failure URL."""
     email_sender.send(
         subject=f"SCAN UNAVAILABLE - {report_date.isoformat()}",
-        body=f"The scan failed and produced no report.\n\nError:\n{error}",
+        body=f"The scan failed and produced no report.\n\nError:\n{error_message}",
     )
-    push_sender.send(f"SCAN UNAVAILABLE ({report_date.isoformat()}): {error}")
+    push_sender.send(f"SCAN UNAVAILABLE ({report_date.isoformat()}): {error_message}")
     deadman.ping_fail()
 
 
@@ -173,17 +184,30 @@ def run_scan(
     If any step before delivery fails, sends "SCAN UNAVAILABLE" with the
     error by email and push instead of a partial report, pings the
     dead-man's-switch failure URL, and re-raises the original error so
-    the caller (the supervisor script) knows the run failed.
+    the caller knows the run failed.
+
+    This is the simple, all-in-one-process version - good enough for
+    running by hand. scripts/run_scan.sh instead calls the two pieces
+    (build, then deliver) separately via src/vpa/cli.py, so it can
+    retry just the build step without risking a duplicate or premature
+    "SCAN UNAVAILABLE" notification.
     """
     resolved_date = report_date or date.today()
 
     try:
         result = run_pipeline(config, repo_root=repo_root, signal_dir=signal_dir)
-        output_dir = _resolve_output_dir(repo_root, config.report.output_dir)
+        output_dir = resolve_output_dir(repo_root, config.report.output_dir)
         paths = write_report(result, output_dir, resolved_date)
     except Exception as exc:
-        _send_failure(resolved_date, exc, email_sender, push_sender, deadman)
+        send_failure(resolved_date, str(exc), email_sender, push_sender, deadman)
         raise
 
-    _send_success(resolved_date, result, paths, email_sender, push_sender, deadman)
+    send_success(
+        resolved_date,
+        len(result.candidates),
+        paths.markdown_path.read_text(),
+        email_sender,
+        push_sender,
+        deadman,
+    )
     return paths
