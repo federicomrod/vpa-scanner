@@ -27,17 +27,19 @@ place before any real scanning logic is written. Concretely, that means:
 - The actual "look at stock data and find patterns" logic does **not**
   exist yet - it comes in a later milestone, once the specification
   documents in `docs/` are finalised.
-- The report can now be emailed to you, pushed to your phone as a
-  short summary, and the run pings a monitoring service so you'd find
-  out if the scan silently stopped running. See "Setting up delivery"
-  below - there are a few one-time things you'll need to set up
-  yourself before any of this can actually send anything (nothing has
-  actually been sent yet - that requires the supervisor script from
-  the next pull request, plus the setup below).
+- The report can be emailed to you, pushed to your phone as a short
+  summary, and the run pings a monitoring service so you'd find out if
+  the scan silently stopped running. See "Setting up delivery" below
+  for the one-time setup this needs before it can actually send you
+  anything for real.
+- There's now a supervisor script (`scripts/run_scan.sh`) meant to be
+  the one thing a scheduled job calls each morning: it makes sure two
+  scans never overlap, skips non-trading days, only runs from a
+  released version of the code, retries if something transient goes
+  wrong, and always tells you the outcome one way or another.
 
 The sections below describe how the project is organised, what you
-need to set up for delivery to work, and how to run things by hand in
-the meantime.
+need to set up for delivery to work, and how to actually run it.
 
 ## How it's organised
 
@@ -51,20 +53,20 @@ the meantime.
 | `src/vpa/delivery/` | Sends the report by email, sends a short push notification, and pings the monitoring service. |
 | `src/vpa/reviewer/` | Anything that supports the human trader's own review process. |
 | `src/vpa/config.py` | Loads settings from `config.yaml` and the environment. |
+| `src/vpa/trading_calendar.py` | Works out whether today is a trading day, so the scan can skip weekends and market holidays. |
 | `src/vpa/pipeline.py` | Ties everything together: run the scan, build the report, send it out. |
+| `src/vpa/cli.py` | The two commands `scripts/run_scan.sh` actually calls - see that script for why they're split in two. |
 | `tests/` | Automated checks that the code does what it's supposed to, using fake data - no real market data or internet connection involved. |
 | `fixtures/` | Small fake sample data files used by the tests. |
-| `scripts/run_scan.sh` | The script a scheduled job actually calls each morning (coming in a later pull request). |
+| `scripts/run_scan.sh` | The supervisor script a scheduled job (cron, launchd, ...) actually calls each morning. |
 
 ## Setting up delivery (email, push notifications, monitoring)
 
 Three one-time things need to be set up before the project can actually
-send you anything. None of them go into this repository or get shared
-with anyone else - they're private values that only live on whatever
-computer eventually runs the scan (the "supervisor script" coming in
-the next pull request will explain exactly where to put them). For now,
-it's enough to create these and keep them somewhere safe, like a
-password manager.
+send you anything. None of them go into this repository, get typed into
+a chat with Claude, or get shared with anyone else - they're private
+values that only ever live in one small file on the computer that runs
+the scan (see "Where the secrets actually go" further down).
 
 ### 1. A Gmail "App Password" (for sending the email)
 
@@ -114,33 +116,68 @@ and alerting you if one doesn't show up.
 3. Copy the "ping URL" it gives you.
 4. That URL is what becomes `VPA_DEADMAN__BASE_URL`.
 
-## How to run it (for later, once there's something to run)
+## Where the secrets actually go
+
+`scripts/run_scan.sh` (the supervisor script) reads a private file
+whose *path* you tell it about via an environment variable,
+`VPA_ENV_FILE` - the file itself is never part of this repository, and
+its path can be anywhere you like (for example
+`~/.config/vpa-scanner.env`, kept readable only by you). It looks like
+this:
+
+```
+VPA_EMAIL__FROM_ADDR=you@gmail.com
+VPA_EMAIL__TO_ADDR=you@gmail.com
+VPA_EMAIL__SMTP_PASSWORD=<the Gmail App Password from step 1 above>
+VPA_PUSH__NTFY_TOPIC=<the ntfy.sh topic from step 2 above>
+VPA_DEADMAN__BASE_URL=<the healthchecks.io ping URL from step 3 above>
+```
+
+## How to run it
 
 This project uses a tool called `uv` to manage its Python dependencies,
-so nothing needs to be installed by hand.
+so nothing needs to be installed by hand, beyond two small system tools
+`scripts/run_scan.sh` relies on:
+
+- **`git`** and **`uv`** (you already have these, since you're reading
+  this from a checkout).
+- **`flock`** and **`timeout`** - standard on Linux, but not built into
+  macOS. On a Mac: `brew install flock coreutils`.
+
+Everyday commands:
 
 - Install everything the project needs: `uv sync`
 - Run the automated tests: `uv run pytest`
 - Check the code style: `uv run ruff check .`
 
-There's no single command yet that runs a scan *and actually sends it*
-- that's what the supervisor script (next pull request) will wire up,
-using the values from "Setting up delivery" above. In the meantime,
-you can see the pipeline produce a real (fake-data) report on its own:
+To actually run a full scan (build the report and send it), set
+`VPA_ENV_FILE` to your private secrets file from above, and run the
+supervisor script from a tagged commit (see "Why does it need a git
+tag?" below):
 
 ```
-uv run python -c "
-from pathlib import Path
-from vpa.config import load_config
-from vpa.pipeline import run_and_write_report
-print(run_and_write_report(load_config(Path('config.yaml'))))
-"
+git tag v0.1.0   # only needed once, or whenever you want a new release point
+VPA_ENV_FILE=~/.config/vpa-scanner.env ./scripts/run_scan.sh
 ```
 
-That writes a Markdown report and a matching JSON file into `reports/`
-(a folder that's never committed to git - see `.gitignore`), using
-today's date as the filename. This section will be updated with the
-real end-to-end command once the supervisor script exists.
+That builds the (still fake-data) report, writes it to `reports/`
+(a folder that's never committed to git - see `.gitignore`), emails it
+to you, sends a one-line push notification, and pings your monitoring
+check. If today isn't a trading day, it does nothing and exits quietly.
+If anything goes wrong, it retries automatically, and if it still can't
+recover, it emails and pushes a clear "SCAN UNAVAILABLE" instead of
+staying silent.
+
+### Why does it need a git tag?
+
+The supervisor script refuses to run unless the code it's running is
+checked out at an exact git tag (e.g. `v0.1.0`), rather than whatever
+the latest commit happens to be. This is a deliberate safety check: it
+means the version that actually runs and emails you every morning is
+always one you (or a reviewer) deliberately marked as ready, never
+whatever's mid-edit. To update what the live version runs, merge your
+changes to `main` as usual, then create a new tag on the commit you
+want to promote (`git tag v0.1.1 && git push origin v0.1.1`).
 
 ## A note on safety
 
