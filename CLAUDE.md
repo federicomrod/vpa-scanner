@@ -52,6 +52,10 @@ disagreement by guessing - ask.
    real secrets; `holdout/` and `data/raw/` hold real market data that
    must stay untouched by anything except the (future) production data
    loader.
+   The one approved exception (project owner, Milestone 2): the production
+   data loader's `src/vpa/data/secrets.py` reads named keys from
+   `~/vpa-secrets/.env` when a download is run by the owner. Claude never
+   opens that file itself, and never runs a live download.
 
 4. **No network calls in tests, ever.** Anything that would talk to the
    internet in production (SMTP email, a push notification endpoint, a

@@ -1,8 +1,13 @@
-"""Data loading and access.
+"""Data loading, storage and access.
 
-Will hold code that loads market data for the signal package to analyse.
-There is no real market data source yet — `fake.py` stands in for one,
-producing clearly-labelled fake rows so the rest of the pipeline can be
-built and tested. None of this package may read from `.env`, `holdout/`,
-or `data/raw/` — see CLAUDE.md.
+- `ingest.py` downloads raw market data from Massive into the write-once
+  raw store (`raw_store.py`) under `~/vpa-data/raw/`. It is the production
+  data loader CLAUDE.md rule 3 refers to, and the only code that reads the
+  secrets file (`secrets.py`, `~/vpa-secrets/.env`) - approved by the
+  project owner. It is run by the owner, never by tests or by Claude.
+- `universe.py` writes the monthly universe snapshots.
+- `calendar.py` is the NYSE exchange calendar.
+- `fake.py` is the Milestone 1 fake-data stand-in.
+
+Nothing else here may read `.env` files, `holdout/`, or `data/raw/`.
 """
