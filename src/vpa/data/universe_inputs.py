@@ -181,6 +181,7 @@ class SecurityInfoStore:
         self._data_root = data_root
         self._rows: dict[str, dict] = {}
         self._new: list[dict] = []
+        self._saves = 0
         root = data_root / "raw" / "security_info"
         for folder in sorted(root.glob("*")) if root.exists() else []:
             for row in read_partition(data_root, "security_info", folder.name).to_dict("records"):
@@ -198,10 +199,13 @@ class SecurityInfoStore:
         return {t: self._info(self._rows[_key(t, f, as_of)], t, as_of) for t, f in wanted}
 
     def save(self, run_id: str) -> None:
+        """Store anything fetched since the last save, as a new part (one
+        run can save several times, e.g. once per month)."""
         if self._new:
+            self._saves += 1
             write_part(
                 self._data_root, "security_info", f"fetched={datetime.now(UTC).date()}",
-                run_id, pd.DataFrame(self._new), {"dataset": "security_info"},
+                f"{run_id}-{self._saves}", pd.DataFrame(self._new), {"dataset": "security_info"},
             )  # fmt: skip
             self._new = []
 

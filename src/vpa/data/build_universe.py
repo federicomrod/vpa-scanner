@@ -12,6 +12,9 @@ Audit logs, under `<data root>/logs/` (appended to, never rewritten):
   download).
 - `listing_date_discrepancies.csv`: every shortlisted stock whose vendor
   listing date differs from its first ticker event (LEDGER-1 amendment 2).
+- `ticker_history_gaps.csv`: every shortlisted stock whose ticker history
+  the vendor can't vouch for (no FIGI, no history, or a history that
+  contradicts the listed ticker) - it can't be stitched across a rename.
 - `share_count_problems.csv`: every shortlisted stock whose share count
   couldn't be found - it can't qualify, and is listed here rather than
   guessed at.
@@ -123,6 +126,7 @@ def build_month(
         lambda t: by_key["weighted_shares"].get(infos[t].key) if t in infos else None
     )
 
+    audit_ticker_history(data_root, rebalance_date, infos)
     audit_listing_dates(data_root, rebalance_date, infos)
     audit_share_counts(data_root, rebalance_date, shares, shares_date)
     path = build_snapshot(rebalance_date, securities, bars, splits, universe_dir, rules)
@@ -220,6 +224,22 @@ def _append_csv(path: Path, rows: list[dict]) -> None:
         if is_new:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def audit_ticker_history(data_root: Path, rebalance_date: date, infos: dict) -> None:
+    rows = [
+        {
+            "rebalance_date": rebalance_date,
+            "ticker": t,
+            "composite_figi": i.composite_figi,
+            "name": i.name,
+            "status": i.identity.status,
+            "vendor_list_date": i.list_date,
+        }
+        for t, i in sorted(infos.items())
+        if i.identity.status != STATUS_OK
+    ]
+    _append_csv(data_root / "logs" / "ticker_history_gaps.csv", rows)
 
 
 def audit_listing_dates(data_root: Path, rebalance_date: date, infos: dict) -> None:
