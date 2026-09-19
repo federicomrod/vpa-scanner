@@ -37,6 +37,10 @@ class HttpSession(Protocol):
 class MassiveError(Exception):
     """Raised when the API can't give us what we asked for."""
 
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class MassiveClient:
     def __init__(
@@ -78,7 +82,7 @@ class MassiveClient:
                 if response.status_code == 200:
                     return response.json()
                 if response.status_code not in RETRYABLE_STATUS:
-                    raise MassiveError(_describe_failure(url, response))
+                    raise MassiveError(_describe_failure(url, response), response.status_code)
                 problem = f"HTTP {response.status_code}"
                 retry_after = _retry_after_seconds(response)
 
