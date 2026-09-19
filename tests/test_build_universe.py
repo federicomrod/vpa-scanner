@@ -184,3 +184,34 @@ def test_a_stock_with_no_ticker_history_is_flagged_not_fatal(tmp_path, caplog):
     assert "'no_events': 1" in caplog.text
     listing = {r["ticker"]: r for r in read_log(tmp_path, "listing_date_discrepancies.csv")}
     assert listing["FAKEA"]["first_ticker_event"] == ""
+
+
+def test_new_securities_in_a_later_month_are_saved_too(tmp_path):
+    # A stock first shortlisted in October means a second save of listing
+    # info within one run - which must not collide with the first.
+    api = fake_market()
+    api.listed["2025-09-30"].append(
+        {"ticker": "FAKEOCT", "type": "CS", "primary_exchange": "XNYS",
+         "composite_figi": "FIGI_FAKEOCT", "name": "FAKEOCT Inc"}
+    )  # fmt: skip
+    for day in DAYS:
+        api.grouped[day.isoformat()].append(
+            {"T": "FAKEOCT", "o": 30.0, "h": 30.0, "l": 30.0, "c": 30.0, "v": 1e6, "n": 10}
+        )
+    api.overviews["FAKEOCT"] = {"composite_figi": "FIGI_FAKEOCT", "list_date": "2015-01-02"}
+    api.overviews_on[("FAKEOCT", OCT_SHARES)] = {
+        "composite_figi": "FIGI_FAKEOCT",
+        "weighted_shares_outstanding": 2e8,
+    }
+    build(api, tmp_path, months=(SEPT, OCT))
+    assert "FAKEOCT" in read_snapshot(tmp_path / "universe", OCT)["ticker"].tolist()
+    saved = list((tmp_path / "raw" / "security_info").rglob("*.manifest.json"))
+    assert len(saved) == 2
+
+
+def test_stocks_without_usable_ticker_history_are_logged(tmp_path):
+    api = fake_market()
+    del api.events["FIGI_FAKEA"]
+    build(api, tmp_path)
+    gaps = read_log(tmp_path, "ticker_history_gaps.csv")
+    assert [(r["ticker"], r["status"]) for r in gaps] == [("FAKEA", "no_events")]
