@@ -22,7 +22,11 @@ repository folder.
 
     ~/.local/bin/uv run python -m vpa.data.check_market_cap
 
-Both print progress as they go and save a full log under
+**Monthly universe snapshots** (e.g. two months, to test):
+
+    ~/.local/bin/uv run python -m vpa.data.build_universe --first-month 2025-08 --last-month 2025-09
+
+All three print progress as they go and save a full log under
 `~/vpa-data/logs/`. Downloaded data goes to `~/vpa-data/raw/` and is never
 overwritten; running the download again only fetches what is missing.
-Add `--help` to either command to see its options.
+Add `--help` to any command to see its options.

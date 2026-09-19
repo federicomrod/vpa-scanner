@@ -76,14 +76,18 @@ and accept the lag - rejected, contamination; (C) use SEC EDGAR
 publication dates for exact timing - more work and a second data source,
 revisit only if the staleness in (B) proves to matter.
 
-## Amendment 2 (2026-09-19): listing date across renames - TO CONFIRM
+## Amendment 2 (2026-09-19): listing date across renames - CONFIRMED
 
 The vendor defines its listing date as when the *symbol* was first
 listed, so it may reset when a company changes ticker (e.g. SQ -> XYZ).
 The listing date used for the 250-day history rule is therefore the
 earlier of the vendor's listing date and the security's first recorded
-ticker event. Proposed by Claude; awaiting the project owner's
-confirmation.
+ticker event.
+
+Confirmed by the project owner: "A rename isn't a new listing, and
+treating it as one would exclude long-established companies on a
+bookkeeping artifact." Every stock where the two dates differ is logged
+(`logs/listing_date_discrepancies.csv`) for audit.
 
 ## Amendment 3 (2026-09-19): order of checks
 
