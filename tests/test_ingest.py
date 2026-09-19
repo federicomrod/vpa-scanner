@@ -332,3 +332,29 @@ def test_command_line_run_fails_loudly_without_the_secrets_file(tmp_path, caplog
     code = main(["--secrets-file", str(tmp_path / "missing.env"), "--data-root", str(tmp_path)])
     assert code == 1
     assert "INGEST FAILED" in caplog.text and "Secrets file not found" in caplog.text
+
+
+def test_market_cap_check_uses_the_ticker_in_use_on_each_date():
+    # FAKEB was FAKEOLDB until 2 Sep 2025 (see renamed_api). A 2024 check
+    # must ask about FAKEOLDB; asking about FAKEB would get "not found".
+    api = renamed_api()
+    api.overviews["FAKEOLDB"] = {"market_cap": 40.0 * 1e6, "weighted_shares_outstanding": 1e6}
+    api.overviews["FAKEB"].update({"market_cap": 90.0 * 1e6, "weighted_shares_outstanding": 1e6})
+    api.closes[("FAKEOLDB", "2024-09-03")] = 40.0
+    api.closes[("FAKEOLDB", "2024-08-30")] = 39.0
+    api.closes[("FAKEB", "2025-09-03")] = 90.0
+    old, latest = mc.check_ticker(
+        client_for(api), "FAKEB", [date(2024, 9, 3), date(2025, 9, 3)], date(2025, 9, 3)
+    )
+    assert (old["ticker"], old["ticker_on_date"]) == ("FAKEB", "FAKEOLDB")
+    assert old["close_latest"] == 90.0  # today's close, under today's ticker
+    assert old["verdict"] == mc.POINT_IN_TIME
+    assert latest["ticker_on_date"] == "FAKEB"
+
+
+def test_market_cap_check_records_not_found_instead_of_stopping():
+    api = fake_api()
+    del api.overviews["FAKEA"]
+    row = mc.check_one(client_for(api), "FAKEA", date(2023, 9, 1), date(2026, 9, 18))
+    assert row["verdict"] == mc.NOT_FOUND
+    assert not mc.is_acceptable(row["verdict"])
