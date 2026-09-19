@@ -1,8 +1,8 @@
 """FROZEN SPECIFICATION AREA.
 
 This package implements Sections 2-13 of docs/concept-v2.md exactly as
-written. It is empty in Milestone 1 on purpose: no pattern logic is built
-here yet.
+written. Implemented so far: the universe rules (Section 2, `universe.py`)
+and split adjustment (Section 3.1, `adjust.py`) - see LEDGER-1.
 
 Before changing anything in this package (in any future milestone):
 
