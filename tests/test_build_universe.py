@@ -8,6 +8,7 @@ everything is written to a temporary folder. No network, no real data.
 from __future__ import annotations
 
 import csv
+import logging
 from datetime import date
 
 import pytest
@@ -171,3 +172,15 @@ def test_a_day_with_no_market_data_stops_the_build(tmp_path):
     with pytest.raises(MassiveError, match="no daily bars"):
         build(api, tmp_path)
     assert not (tmp_path / "universe").exists()
+
+
+def test_a_stock_with_no_ticker_history_is_flagged_not_fatal(tmp_path, caplog):
+    # The real API answers 404 "No events found" for such stocks.
+    caplog.set_level(logging.INFO)
+    api = fake_market()
+    del api.events["FIGI_FAKEA"]
+    build(api, tmp_path)
+    assert "FAKEA" in read_snapshot(tmp_path / "universe", SEPT)["ticker"].tolist()
+    assert "'no_events': 1" in caplog.text
+    listing = {r["ticker"]: r for r in read_log(tmp_path, "listing_date_discrepancies.csv")}
+    assert listing["FAKEA"]["first_ticker_event"] == ""

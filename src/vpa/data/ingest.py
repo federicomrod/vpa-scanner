@@ -36,7 +36,13 @@ from vpa.data.calendar import previous_session, sessions_between, sessions_endin
 from vpa.data.massive import MassiveClient
 from vpa.data.raw_store import DEFAULT_DATA_ROOT, manifests, new_run_id, write_part
 from vpa.data.secrets import DEFAULT_SECRETS_FILE, RedactSecrets, load_secret
-from vpa.data.tickers import STATUS_OK, Identity, build_identity, segments
+from vpa.data.tickers import (
+    STATUS_OK,
+    Identity,
+    build_identity,
+    fetch_ticker_events,
+    segments,
+)
 
 log = logging.getLogger("vpa.ingest")
 
@@ -81,10 +87,7 @@ def resolve_identity(client: MassiveClient, ticker: str, reference_date: date) -
         f"/v3/reference/tickers/{ticker}", {"date": reference_date.isoformat()}
     ).get("results", {})
     figi = overview.get("composite_figi")
-    events: list[dict] = []
-    if figi:
-        response = client.get(f"/vX/reference/tickers/{figi}/events", {"types": "ticker_change"})
-        events = (response.get("results") or {}).get("events") or []
+    events = fetch_ticker_events(client, figi) if figi else []
     identity = build_identity(ticker, reference_date, figi, overview.get("name"), events)
     if identity.status != STATUS_OK:
         log.warning(
