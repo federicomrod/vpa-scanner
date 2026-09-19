@@ -2,7 +2,8 @@
 
 - The API key is sent in a request header, never in the URL, so it can't
   leak into logs or error messages that quote a URL.
-- Requests are spaced out to a steady rate (`requests_per_second`). Paid
+- Requests are spaced out to a steady rate (`requests_per_second`), even
+  when several threads share one client. Paid
   Stocks plans have no hard call limit, but the vendor asks for
   reasonable use, and a steady pace makes the run time predictable.
 - Temporary failures (rate limiting, server errors, dropped connections)
@@ -16,6 +17,7 @@ the network (CLAUDE.md rule 4).
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, Protocol
@@ -64,6 +66,7 @@ class MassiveClient:
         self._sleep = sleep
         self._clock = clock
         self._last_request_at: float | None = None
+        self._rate_lock = threading.Lock()
         self.request_count = 0
 
     def get(self, path_or_url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -111,14 +114,17 @@ class MassiveClient:
             page = self.get(next_url)
 
     def _wait_for_rate_limit(self) -> None:
-        now = self._clock()
-        if self._last_request_at is not None:
-            wait = self._last_request_at + self._min_interval - now
-            if wait > 0:
-                self._sleep(wait)
-                now += wait
-        self._last_request_at = now
-        self.request_count += 1
+        # Safe to call from several threads at once: each request reserves
+        # the next free time slot, so the overall pace stays the same.
+        with self._rate_lock:
+            now = self._clock()
+            slot = now
+            if self._last_request_at is not None:
+                slot = max(now, self._last_request_at + self._min_interval)
+            self._last_request_at = slot
+            self.request_count += 1
+        if slot > now:
+            self._sleep(slot - now)
 
 
 def _retry_after_seconds(response: Any) -> float | None:
