@@ -358,3 +358,11 @@ def test_market_cap_check_records_not_found_instead_of_stopping():
     row = mc.check_one(client_for(api), "FAKEA", date(2023, 9, 1), date(2026, 9, 18))
     assert row["verdict"] == mc.NOT_FOUND
     assert not mc.is_acceptable(row["verdict"])
+
+
+def test_a_security_with_no_ticker_history_is_downloaded_unstitched(tmp_path, caplog):
+    api = fake_api()
+    del api.events["FAKEFIGI0001"]  # the fake answers 404, like the real API
+    run_fake(api, tmp_path)
+    assert "COVERAGE FAKEA (FAKEA Inc): no_events" in caplog.text
+    assert len(minute_day(tmp_path, date(2025, 9, 2))) == 8

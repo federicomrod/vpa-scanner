@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+from vpa.data.massive import MassiveClient, MassiveError
+
 STATUS_OK = "ok"
 STATUS_NO_FIGI = "no_figi"
 STATUS_NO_EVENTS = "no_events"
@@ -69,6 +71,22 @@ class Identity:
         """Every symbol this security has used (requested one first)."""
         others = [c.ticker for c in self.changes if c.ticker != self.requested]
         return [self.requested, *dict.fromkeys(others)]
+
+
+def fetch_ticker_events(client: MassiveClient, figi: str) -> list[dict]:
+    """The vendor's ticker-change history for a Composite FIGI.
+
+    The vendor answers 404 ("No events found") when it has no history for
+    a security. That means "nothing on record" - the security then gets
+    status `no_events` and is flagged, not stitched - so it returns [].
+    """
+    try:
+        response = client.get(f"/vX/reference/tickers/{figi}/events", {"types": "ticker_change"})
+    except MassiveError as exc:
+        if exc.status_code == 404:
+            return []
+        raise
+    return (response.get("results") or {}).get("events") or []
 
 
 def build_identity(

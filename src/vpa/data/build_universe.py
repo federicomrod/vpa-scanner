@@ -106,6 +106,10 @@ def build_month(
     shortlist = prescreen(rebalance_date, securities, bars, splits)
     log.info("  %d of %d listed stocks pass the cheap checks", len(shortlist), len(listed))
     infos = store.get_many(listed[listed["ticker"].isin(shortlist)], as_of)
+    log.info(
+        "  ticker history on record (status): %s",
+        dict(Counter(i.identity.status for i in infos.values())),
+    )
     shares_date = share_count_date(rebalance_date)
     shares = fetch_share_counts(client, data_root, list(infos.values()), shares_date, run_id)
     store.save(run_id)

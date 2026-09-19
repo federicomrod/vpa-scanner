@@ -102,7 +102,10 @@ class FakeMassiveApi:
                 return FakeResponse(404, {"message": "Ticker not found"})
             return FakeResponse(200, {"results": self.overviews[ticker]})
         if parts[:3] == ["vX", "reference", "tickers"]:
-            return FakeResponse(200, {"results": {"events": self.events.get(parts[3], [])}})
+            # Like the real API: 404 (not an empty list) when there's no history.
+            if not self.events.get(parts[3]):
+                return FakeResponse(404, {"message": "No events found for given ID"})
+            return FakeResponse(200, {"results": {"events": self.events[parts[3]]}})
         # /v2/aggs/ticker/{ticker}/range/1/{timespan}/{from}/{to}
         if parts[:3] == ["v2", "aggs", "ticker"] and parts[6] == "minute":
             return self._minutes(parts[3], parts[7], parts[8], int(params.get("cursor", 0)), url)

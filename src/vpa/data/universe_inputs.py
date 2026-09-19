@@ -32,7 +32,7 @@ import pandas as pd
 
 from vpa.data.massive import MassiveClient, MassiveError
 from vpa.data.raw_store import manifests, read_partition, write_part
-from vpa.data.tickers import Identity, build_identity, segments
+from vpa.data.tickers import Identity, build_identity, fetch_ticker_events, segments
 
 log = logging.getLogger("vpa.universe_inputs")
 
@@ -217,12 +217,7 @@ class SecurityInfoStore:
             # so the stock can't pass the history check. Recorded, not guessed.
             log.warning("No vendor details for %s on %s - listing date unknown", ticker, as_of)
             overview = {}
-        events: list[dict] = []
-        if figi:
-            response = self._client.get(
-                f"/vX/reference/tickers/{figi}/events", {"types": "ticker_change"}
-            )
-            events = (response.get("results") or {}).get("events") or []
+        events = fetch_ticker_events(self._client, figi) if figi else []
         return {
             "key": _key(ticker, figi, as_of),
             "ticker": ticker,
