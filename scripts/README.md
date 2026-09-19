@@ -26,7 +26,17 @@ repository folder.
 
     ~/.local/bin/uv run python -m vpa.data.build_universe --first-month 2025-08 --last-month 2025-09
 
-All three print progress as they go and save a full log under
+**Minute bars for every universe member, plus SPY** (after the
+universe snapshots are built; hours - run in Terminal, see below):
+
+    caffeinate -i ~/.local/bin/uv run python -m vpa.data.ingest_universe
+
+Long runs: start them from a Terminal window rather than the Claude
+chat (which gives up waiting after two minutes). `caffeinate -i` stops
+the Mac sleeping until the command finishes. If a run stops for any
+reason, start it again - anything already stored is skipped.
+
+All of these print progress as they go and save a full log under
 `~/vpa-data/logs/`. Downloaded data goes to `~/vpa-data/raw/` and is never
 overwritten; running the download again only fetches what is missing.
 Add `--help` to any command to see its options.

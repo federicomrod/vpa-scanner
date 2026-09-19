@@ -11,9 +11,10 @@ Downloads, for a list of tickers and a date range:
 
 Everything lands in the write-once raw store (`vpa.data.raw_store`) under
 `~/vpa-data/raw/`. Minute bars are partitioned by trading date. Work is done
-a calendar month at a time: a month's data is only written once every
-ticker in it has downloaded successfully, so a failure never leaves a
-half-filled month behind, and re-running skips anything already stored.
+a calendar month at a time, in batches of securities: a batch is only
+written once every security in it has downloaded successfully, so a
+failure never leaves a security half-stored, and re-running skips
+anything already stored.
 
 Run it with `uv run python -m vpa.data.ingest --help`.
 """
@@ -26,6 +27,8 @@ import logging
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -39,6 +42,7 @@ from vpa.data.secrets import DEFAULT_SECRETS_FILE, RedactSecrets, load_secret
 from vpa.data.tickers import (
     STATUS_OK,
     Identity,
+    Segment,
     build_identity,
     fetch_ticker_events,
     segments,
@@ -146,6 +150,12 @@ def covered_keys(data_root: Path, day: date) -> set[str]:
     return keys
 
 
+#: Decides, for one security and one calendar month (first and last trading
+#: day), which symbol(s) to fetch for which dates. An empty list means
+#: "skip this security this month".
+Planner = Callable[[Identity, date, date], list[Segment]]
+
+
 def ingest_minutes(
     client: MassiveClient,
     data_root: Path,
@@ -154,95 +164,110 @@ def ingest_minutes(
     end: date,
     run_id: str,
     stats: RunStats,
+    planner: Planner = segments,
+    threads: int = 1,
+    batch_size: int = 200,
 ) -> None:
+    """Download minute bars a calendar month at a time.
+
+    Within a month, securities are downloaded in batches (`threads` at a
+    time); a batch is written only once every security in it has
+    downloaded, so a failure never leaves a security half-stored for a
+    day. Re-running skips security-days already stored.
+    """
     sessions = sessions_between(start, end)
     months = sorted({(d.year, d.month) for d in sessions})
     for month_number, (year, month) in enumerate(months, 1):
         month_sessions = [d for d in sessions if (d.year, d.month) == (year, month)]
         covered = {d: covered_keys(data_root, d) for d in month_sessions}
-        todo = [
-            i for i in identities if any(i.security_key not in covered[d] for d in month_sessions)
-        ]
+        plans = {}
+        for identity in identities:
+            plan = planner(identity, month_sessions[0], month_sessions[-1])
+            days = [d for d in month_sessions if any(s.start <= d <= s.end for s in plan)]
+            if any(identity.security_key not in covered[d] for d in days):
+                plans[identity.security_key] = (identity, plan, days)
         label = f"{year}-{month:02d}"
-        if not todo:
-            log.info(
-                "Month %s (%d of %d): already stored, skipping", label, month_number, len(months)
-            )
+        if not plans:
+            log.info("Month %s (%d of %d): nothing to download", label, month_number, len(months))
             continue
         log.info(
             "Month %s (%d of %d): downloading %d securities",
             label,
             month_number,
             len(months),
-            len(todo),
+            len(plans),
         )
+        todo = list(plans.values())
+        for first in range(0, len(todo), batch_size):
+            batch = todo[first : first + batch_size]
+            with ThreadPoolExecutor(threads) as pool:
+                fetched = list(pool.map(lambda item: _fetch_planned(client, *item[:2]), batch))
+            _write_days(data_root, run_id, batch, fetched, covered, stats)
+            if len(todo) <= 20:
+                for (identity, _, _), bars in zip(batch, fetched, strict=True):
+                    log.info("  %-6s %s: %s bars", identity.requested, label, f"{len(bars):,}")
+            else:
+                log.info(
+                    "  %s: %d of %d securities stored (%s bars)",
+                    label,
+                    first + len(batch),
+                    len(todo),
+                    f"{sum(len(b) for b in fetched):,}",
+                )
+            # Only once the batch is safely stored, so the audit log never
+            # lists a stitch whose data wasn't written.
+            for identity, plan, _ in batch:
+                for segment in plan:
+                    if segment.ticker != identity.requested:
+                        record_stitch(data_root, run_id, identity, segment)
+                        stats.stitched_segments += 1
 
-        fetched: list[pd.DataFrame] = []
-        stitches = []
-        for n, identity in enumerate(todo, 1):
-            parts = []
-            for segment in segments(identity, month_sessions[0], month_sessions[-1]):
-                if segment.ticker != identity.requested:
-                    stitches.append((identity, segment))
-                parts.append(fetch_minutes(client, segment.ticker, segment.start, segment.end))
-            bars = _concat(parts)
-            bars["requested_ticker"] = identity.requested
-            bars["security_key"] = identity.security_key
-            fetched.append(bars)
-            log.info(
-                "  [%d/%d] %-6s %s: %s bars",
-                n,
-                len(todo),
-                identity.requested,
-                label,
-                f"{len(bars):,}",
-            )
 
-        # Everything for the month downloaded - now write it, one part per day.
-        month_bars = _concat(fetched)[MINUTE_COLUMNS]
-        for day in month_sessions:
-            new = [i for i in todo if i.security_key not in covered[day]]
-            if not new:
-                continue
-            keys = {i.security_key for i in new}
-            day_bars = month_bars[
-                (month_bars["date_et"] == day) & month_bars["security_key"].isin(keys)
-            ].sort_values(["security_key", "timestamp_utc"], ignore_index=True)
-            counts = day_bars.groupby("security_key").size()
-            write_part(
-                data_root,
-                MINUTE_DATASET,
-                f"date={day.isoformat()}",
-                run_id,
-                day_bars,
-                {
-                    "dataset": MINUTE_DATASET,
-                    "date_et": day.isoformat(),
-                    "adjusted": False,
-                    "securities": {
-                        i.security_key: {
-                            "requested_ticker": i.requested,
-                            "tickers_used": sorted(
-                                set(
-                                    day_bars.loc[
-                                        day_bars["security_key"] == i.security_key, "ticker"
-                                    ]
-                                )
-                            ),
-                            "bars": int(counts.get(i.security_key, 0)),
-                            "identity_status": i.status,
-                        }
-                        for i in new
-                    },
+def _fetch_planned(client: MassiveClient, identity: Identity, plan: list[Segment]) -> pd.DataFrame:
+    parts = [fetch_minutes(client, s.ticker, s.start, s.end) for s in plan]
+    bars = _concat(parts)
+    bars["requested_ticker"] = identity.requested
+    bars["security_key"] = identity.security_key
+    return bars
+
+
+def _write_days(data_root, run_id, batch, fetched, covered, stats: RunStats) -> None:
+    """One new part per trading day, for this batch's securities."""
+    bars = _concat(fetched)[MINUTE_COLUMNS]
+    for day in sorted({d for _, _, days in batch for d in days}):
+        new = [i for i, _, days in batch if day in days and i.security_key not in covered[day]]
+        if not new:
+            continue
+        keys = {i.security_key for i in new}
+        day_bars = bars[(bars["date_et"] == day) & bars["security_key"].isin(keys)].sort_values(
+            ["security_key", "timestamp_utc"], ignore_index=True
+        )
+        counts = day_bars.groupby("security_key").size()
+        tickers = day_bars.groupby("security_key")["ticker"].unique()
+        write_part(
+            data_root,
+            MINUTE_DATASET,
+            f"date={day.isoformat()}",
+            run_id,
+            day_bars,
+            {
+                "dataset": MINUTE_DATASET,
+                "date_et": day.isoformat(),
+                "adjusted": False,
+                "securities": {
+                    i.security_key: {
+                        "requested_ticker": i.requested,
+                        "tickers_used": sorted(tickers.get(i.security_key, [])),
+                        "bars": int(counts.get(i.security_key, 0)),
+                        "identity_status": i.status,
+                    }
+                    for i in new
                 },
-            )
-            stats.files += 1
-            stats.bars += len(day_bars)
-        # Only once the month is safely stored, so the audit log never lists
-        # a stitch whose data wasn't written.
-        for identity, segment in stitches:
-            record_stitch(data_root, run_id, identity, segment)
-            stats.stitched_segments += 1
+            },
+        )
+        covered[day] |= keys
+        stats.files += 1
+        stats.bars += len(day_bars)
 
 
 def record_stitch(data_root: Path, run_id: str, identity: Identity, segment) -> None:
@@ -295,17 +320,40 @@ def ingest_reference(
     identities: list[Identity],
     run_id: str,
     stats: RunStats,
+    extra_tickers: dict[str, set[str]] | None = None,
+    threads: int = 1,
 ) -> None:
     """Splits, dividends and ticker events for every security, stored
-    under the date they were fetched (the vendor can revise these)."""
+    under the date they were fetched (the vendor can revise these).
+
+    Corporate actions are fetched under every symbol the security used:
+    its ticker history, plus any in `extra_tickers` (security key ->
+    symbols seen elsewhere, e.g. in the monthly ticker lists).
+    """
     fetched_on = f"fetched={datetime.now(UTC).date().isoformat()}"
-    splits, dividends, events = [], [], []
+    extra_tickers = extra_tickers or {}
+    jobs = [
+        (identity, ticker)
+        for identity in identities
+        for ticker in dict.fromkeys(
+            [*identity.all_tickers, *sorted(extra_tickers.get(identity.security_key, ()))]
+        )
+    ]
+
+    def corporate_actions(job):
+        identity, ticker = job
+        params = {"ticker": ticker, "limit": 5000}
+        tag = {"requested_ticker": identity.requested}
+        splits = client.get_all("/stocks/v1/splits", params)
+        dividends = client.get_all("/stocks/v1/dividends", params)
+        return [{**r, **tag} for r in splits], [{**r, **tag} for r in dividends]
+
+    with ThreadPoolExecutor(threads) as pool:
+        results = list(pool.map(corporate_actions, jobs))
+    splits = [row for found, _ in results for row in found]
+    dividends = [row for _, found in results for row in found]
+    events = []
     for identity in identities:
-        for ticker in identity.all_tickers:
-            for row in client.get_all("/stocks/v1/splits", {"ticker": ticker, "limit": 5000}):
-                splits.append({**row, "requested_ticker": identity.requested})
-            for row in client.get_all("/stocks/v1/dividends", {"ticker": ticker, "limit": 5000}):
-                dividends.append({**row, "requested_ticker": identity.requested})
         for change in identity.changes:
             events.append(
                 {
