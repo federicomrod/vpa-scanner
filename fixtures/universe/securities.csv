@@ -1,17 +1,17 @@
-ticker,type,primary_exchange,market_cap,list_date,close,volume,selected,why
-FAKEA,CS,XNYS,10000000000,2015-01-02,50,1000000,yes,passes everything (dollar volume 50m - ranked first)
-FAKEB,CS,XNAS,5000000000,2015-01-02,20,1000000,yes,passes everything (dollar volume 20m)
-FAKEC,CS,XASE,3000000000,2015-01-02,30,700000,yes,passes everything on NYSE American (dollar volume 21m)
-FAKEEDGELO,CS,XNYS,2000000000,2015-01-02,10,1500000,yes,exactly on every lower limit: 2bn cap / $10 close / 15m dollar volume
-FAKEEDGEHI,CS,XNAS,50000000000,2015-01-02,40,1000000,yes,exactly on the 50bn upper market-cap limit
-FAKEARCA,CS,ARCX,10000000000,2015-01-02,50,1000000,no,listed on NYSE Arca - not one of the three allowed exchanges
-FAKEETF,ETF,XNYS,10000000000,2015-01-02,50,1000000,no,an ETF not a common stock
-FAKEADR,ADRC,XNYS,10000000000,2015-01-02,50,1000000,no,an ADR not a common stock
-FAKEPFD,PFD,XNYS,10000000000,2015-01-02,50,1000000,no,a preferred share not a common stock
-FAKENEW,CS,XNAS,10000000000,2025-01-02,50,1000000,no,listed too recently (under 250 trading days)
-FAKENOLIST,CS,XNAS,10000000000,,50,1000000,no,no listing date known
-FAKESMALL,CS,XNYS,1999999999,2015-01-02,50,1000000,no,market cap just under 2bn
-FAKELARGE,CS,XNYS,50000000001,2015-01-02,50,1000000,no,market cap just over 50bn
+ticker,type,primary_exchange,weighted_shares,list_date,close,volume,selected,why
+FAKEA,CS,XNYS,200000000.0,2015-01-02,50,1000000,yes,passes everything (dollar volume 50m - ranked first)
+FAKEB,CS,XNAS,250000000.0,2015-01-02,20,1000000,yes,passes everything (dollar volume 20m)
+FAKEC,CS,XASE,100000000.0,2015-01-02,30,700000,yes,passes everything on NYSE American (dollar volume 21m)
+FAKEEDGELO,CS,XNYS,200000000.0,2015-01-02,10,1500000,yes,exactly on every lower limit: 2bn cap / $10 close / 15m dollar volume
+FAKEEDGEHI,CS,XNAS,1250000000.0,2015-01-02,40,1000000,yes,exactly on the 50bn upper market-cap limit
+FAKEARCA,CS,ARCX,200000000.0,2015-01-02,50,1000000,no,listed on NYSE Arca - not one of the three allowed exchanges
+FAKEETF,ETF,XNYS,200000000.0,2015-01-02,50,1000000,no,an ETF not a common stock
+FAKEADR,ADRC,XNYS,200000000.0,2015-01-02,50,1000000,no,an ADR not a common stock
+FAKEPFD,PFD,XNYS,200000000.0,2015-01-02,50,1000000,no,a preferred share not a common stock
+FAKENEW,CS,XNAS,200000000.0,2025-01-02,50,1000000,no,listed too recently (under 250 trading days)
+FAKENOLIST,CS,XNAS,200000000.0,,50,1000000,no,no listing date known
+FAKESMALL,CS,XNYS,39999999.98,2015-01-02,50,1000000,no,market cap just under 2bn
+FAKELARGE,CS,XNYS,1000000000.02,2015-01-02,50,1000000,no,market cap just over 50bn
 FAKENOCAP,CS,XNYS,,2015-01-02,50,1000000,no,no market cap known
-FAKECHEAP,CS,XNYS,10000000000,2015-01-02,9.99,5000000,no,close just under $10 (despite high dollar volume)
-FAKETHIN,CS,XNYS,10000000000,2015-01-02,20,749999,no,dollar volume just under 15m
+FAKECHEAP,CS,XNYS,1001001001.001001,2015-01-02,9.99,5000000,no,close just under $10 (despite high dollar volume)
+FAKETHIN,CS,XNYS,500000000.0,2015-01-02,20,749999,no,dollar volume just under 15m

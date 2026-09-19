@@ -12,8 +12,18 @@ Interpretations approved by the project owner (LEDGER-1):
   Nothing dated on or after the rebalance date is used.
 - Screening uses the vendor's daily bars (the whole market is screened,
   not just our 400 stocks).
-- Market cap is the vendor's figure, taken as of the previous trading day.
-- "250 trading days of history" is counted from the vendor's listing date.
+- Market cap (amended - see LEDGER-1): the vendor's share count as of
+  `share_count_lag_days` (105) calendar days before the previous trading
+  day, times our previous-day close. The vendor's own market cap is NOT
+  used: its share count can come from an SEC filing published after the
+  date asked about (look-ahead). 105 days = the longest filing deadline
+  (90 days for an annual report) plus the 15-day extension, so the
+  filing was public by the rebalance date. Shares are adjusted for
+  splits that took effect after that date.
+- "250 trading days of history" is counted from the listing date: the
+  earlier of the vendor's listing date and the security's first recorded
+  ticker event, because the vendor's listing date may reset when a
+  company changes ticker.
 - The $10 floor and dollar volume use split-adjusted prices (adjusted as
   of the rebalance date - see `vpa.signal.adjust`).
 
@@ -27,7 +37,7 @@ Two further readings, recorded here so they are visible:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
@@ -35,7 +45,11 @@ from pydantic import BaseModel, ConfigDict
 from vpa.data.calendar import is_session, previous_session, sessions_ending
 from vpa.signal.adjust import split_adjust_daily
 
-SECURITY_COLUMNS = ["ticker", "type", "primary_exchange", "market_cap", "list_date"]
+#: Needed for every security screened.
+SCREEN_COLUMNS = ["ticker", "type", "primary_exchange"]
+#: Also needed, but only for securities that pass `prescreen`. The
+#: optional `first_event_date` column is used for the listing date too.
+SECURITY_COLUMNS = [*SCREEN_COLUMNS, "list_date", "weighted_shares"]
 BAR_COLUMNS = ["ticker", "date", "close", "volume"]
 
 
@@ -57,6 +71,8 @@ class UniverseRules(BaseModel):
     min_close: float = 10.0
     min_history_sessions: int = 250
     top_n: int = 400
+    #: Calendar days between the share-count date and the as-of session.
+    share_count_lag_days: int = 105
 
 
 @dataclass(frozen=True)
@@ -77,6 +93,32 @@ def is_rebalance_date(day: date) -> bool:
     return is_session(day) and previous_session(day).month != day.month
 
 
+def share_count_date(rebalance_date: date, rules: UniverseRules | None = None) -> date:
+    """The date to ask the vendor for share counts, for this rebalance."""
+    rules = rules or UniverseRules()
+    return previous_session(rebalance_date) - timedelta(days=rules.share_count_lag_days)
+
+
+def prescreen(
+    rebalance_date: date,
+    securities: pd.DataFrame,
+    daily_bars: pd.DataFrame,
+    splits: pd.DataFrame,
+    rules: UniverseRules | None = None,
+) -> list[str]:
+    """Tickers passing the cheap checks (exchange, type, price, dollar
+    volume). Only these need listing dates and share counts looked up -
+    every other security is excluded whatever those turn out to be."""
+    rules = rules or UniverseRules()
+    candidates, as_of = _measure(
+        rebalance_date, securities, daily_bars, splits, rules, SCREEN_COLUMNS
+    )
+    keep = pd.Series(True, index=candidates.index)
+    for _, passes in _cheap_steps(candidates, rules, as_of):
+        keep &= passes
+    return sorted(candidates.loc[keep, "ticker"])
+
+
 def select_universe(
     rebalance_date: date,
     securities: pd.DataFrame,
@@ -87,9 +129,12 @@ def select_universe(
     """Apply Section 2 to the given inputs.
 
     `securities`: one row per ticker, as the vendor described it as of the
-    previous trading day - `ticker`, `type`, `primary_exchange`,
-    `market_cap`, `list_date`. Must include since-delisted names that were
-    trading then; that is what keeps the universe free of survivorship bias.
+    previous trading day - `ticker`, `type`, `primary_exchange`, plus
+    `list_date`, optional `first_event_date` and `weighted_shares` (the
+    vendor's weighted shares outstanding as of `share_count_date`), which
+    may be missing for tickers that fail `prescreen`. Must include
+    since-delisted names that were trading then; that is what keeps the
+    universe free of survivorship bias.
 
     `daily_bars`: unadjusted vendor daily bars - `ticker`, `date`,
     `close`, `volume`. Bars on or after the rebalance date are ignored.
@@ -97,67 +142,30 @@ def select_universe(
     `splits`: see `vpa.signal.adjust.split_adjust_daily`.
     """
     rules = rules or UniverseRules()
-    if not is_rebalance_date(rebalance_date):
-        raise ValueError(f"{rebalance_date} is not the first trading day of a month")
-    _require_columns("securities", securities, SECURITY_COLUMNS)
-    _require_columns("daily_bars", daily_bars, BAR_COLUMNS)
-    securities = securities.assign(list_date=_as_dates(securities["list_date"]))
-    daily_bars = daily_bars.assign(date=_as_dates(daily_bars["date"]))
-    splits = splits.assign(execution_date=_as_dates(splits["execution_date"]))
-    if securities["ticker"].duplicated().any():
-        raise ValueError("securities table lists a ticker more than once")
-    if daily_bars.duplicated(["ticker", "date"]).any():
-        raise ValueError("daily_bars has more than one bar for a ticker on the same day")
-
-    as_of = previous_session(rebalance_date)
-    window = sessions_ending(as_of, rules.dollar_volume_sessions)
+    candidates, as_of = _measure(
+        rebalance_date, securities, daily_bars, splits, rules, SECURITY_COLUMNS
+    )
     history_cutoff = sessions_ending(as_of, rules.min_history_sessions)[0]
-
-    # Strictly trailing: only bars inside the window, which ends the day
-    # before the rebalance date (CLAUDE.md rule 5).
-    in_window = daily_bars[daily_bars["date"].isin(window)]
-    adjusted = split_adjust_daily(in_window, splits, as_of=rebalance_date)
-    adjusted = adjusted.assign(dollar_volume=adjusted["close"] * adjusted["volume"])
-
-    median_dollar_volume = (
-        adjusted.pivot(index="ticker", columns="date", values="dollar_volume")
-        .reindex(columns=window)
-        .fillna(0.0)  # no bar that day = zero dollar volume
-        .median(axis=1)
+    shares_date = share_count_date(rebalance_date, rules)
+    listed_on = _listing_date(candidates)
+    candidates["listing_date"] = listed_on.dt.date
+    candidates["share_count_date"] = shares_date
+    candidates["market_cap"] = point_in_time_market_cap(
+        candidates, _dated_splits(splits), shares_date, rebalance_date
     )
-    last_close = adjusted[adjusted["date"] == as_of].set_index("ticker")["close"]
 
-    candidates = securities.copy()
-    candidates["median_dollar_volume_60"] = (
-        candidates["ticker"].map(median_dollar_volume).fillna(0.0)
-    )
-    candidates["close"] = candidates["ticker"].map(last_close)
-
-    steps: list[tuple[str, pd.Series]] = [
-        (
-            "not listed on NYSE, Nasdaq or NYSE American",
-            candidates["primary_exchange"].isin(rules.exchanges),
-        ),
-        (
-            "not common stock (ETF, fund, ADR, preferred, warrant, unit, ...)",
-            candidates["type"] == rules.security_type,
-        ),
+    # Cheap checks first (so `prescreen` can skip lookups for the rest);
+    # the order changes only which step gets the credit, not the result.
+    steps = [
+        *_cheap_steps(candidates, rules, as_of),
         (
             f"fewer than {rules.min_history_sessions} trading days since listing",
-            candidates["list_date"].notna() & (candidates["list_date"] <= history_cutoff),
+            listed_on <= pd.Timestamp(history_cutoff),  # unknown (NaT) fails
         ),
         (
             f"market cap unknown or outside ${rules.min_market_cap / 1e9:g}bn"
             f"-${rules.max_market_cap / 1e9:g}bn",
             candidates["market_cap"].between(rules.min_market_cap, rules.max_market_cap),
-        ),
-        (
-            f"no close on {as_of} or close below ${rules.min_close:g}",
-            candidates["close"] >= rules.min_close,
-        ),
-        (
-            f"median daily dollar volume below ${rules.min_median_dollar_volume:,.0f}",
-            candidates["median_dollar_volume_60"] >= rules.min_median_dollar_volume,
         ),
     ]
     removed_by_step: dict[str, int] = {}
@@ -183,6 +191,103 @@ def select_universe(
         selected=selected,
         removed_by_step=removed_by_step,
     )
+
+
+def point_in_time_market_cap(
+    candidates: pd.DataFrame, splits: pd.DataFrame, shares_date: date, rebalance_date: date
+) -> pd.Series:
+    """weighted_shares x close, with the share count brought forward
+    through any split taking effect after `shares_date` and up to the
+    rebalance date - the same basis as `close`, which is split-adjusted
+    as of the rebalance date."""
+    factor = pd.Series(1.0, index=candidates.index)
+    later = splits[
+        (splits["execution_date"] > shares_date) & (splits["execution_date"] <= rebalance_date)
+    ]
+    for split in later.itertuples(index=False):
+        factor[candidates["ticker"] == split.ticker] *= split.split_to / split.split_from
+    return candidates["weighted_shares"] * factor * candidates["close"]
+
+
+def _measure(
+    rebalance_date: date,
+    securities: pd.DataFrame,
+    daily_bars: pd.DataFrame,
+    splits: pd.DataFrame,
+    rules: UniverseRules,
+    required: list[str],
+) -> tuple[pd.DataFrame, date]:
+    """Validate inputs and add each security's close and median dollar
+    volume as of the previous trading day."""
+    if not is_rebalance_date(rebalance_date):
+        raise ValueError(f"{rebalance_date} is not the first trading day of a month")
+    _require_columns("securities", securities, required)
+    _require_columns("daily_bars", daily_bars, BAR_COLUMNS)
+    securities = securities.copy()
+    for column in ("list_date", "first_event_date"):
+        if column in securities.columns:
+            securities[column] = _as_dates(securities[column])
+    daily_bars = daily_bars.assign(date=_as_dates(daily_bars["date"]))
+    splits = _dated_splits(splits)
+    if securities["ticker"].duplicated().any():
+        raise ValueError("securities table lists a ticker more than once")
+    if daily_bars.duplicated(["ticker", "date"]).any():
+        raise ValueError("daily_bars has more than one bar for a ticker on the same day")
+
+    as_of = previous_session(rebalance_date)
+    window = sessions_ending(as_of, rules.dollar_volume_sessions)
+
+    # Strictly trailing: only bars inside the window, which ends the day
+    # before the rebalance date (CLAUDE.md rule 5).
+    in_window = daily_bars[daily_bars["date"].isin(window)]
+    adjusted = split_adjust_daily(in_window, splits, as_of=rebalance_date)
+    adjusted = adjusted.assign(dollar_volume=adjusted["close"] * adjusted["volume"])
+
+    median_dollar_volume = (
+        adjusted.pivot(index="ticker", columns="date", values="dollar_volume")
+        .reindex(columns=window)
+        .fillna(0.0)  # no bar that day = zero dollar volume
+        .median(axis=1)
+    )
+    last_close = adjusted[adjusted["date"] == as_of].set_index("ticker")["close"]
+
+    securities["median_dollar_volume_60"] = (
+        securities["ticker"].map(median_dollar_volume).fillna(0.0)
+    )
+    securities["close"] = securities["ticker"].map(last_close)
+    return securities, as_of
+
+
+def _cheap_steps(candidates: pd.DataFrame, rules: UniverseRules, as_of: date):
+    return [
+        (
+            "not listed on NYSE, Nasdaq or NYSE American",
+            candidates["primary_exchange"].isin(rules.exchanges),
+        ),
+        (
+            "not common stock (ETF, fund, ADR, preferred, warrant, unit, ...)",
+            candidates["type"] == rules.security_type,
+        ),
+        (
+            f"no close on {as_of} or close below ${rules.min_close:g}",
+            candidates["close"] >= rules.min_close,
+        ),
+        (
+            f"median daily dollar volume below ${rules.min_median_dollar_volume:,.0f}",
+            candidates["median_dollar_volume_60"] >= rules.min_median_dollar_volume,
+        ),
+    ]
+
+
+def _listing_date(candidates: pd.DataFrame) -> pd.Series:
+    """The earlier of the vendor's listing date and the first ticker event
+    (either may be missing)."""
+    columns = [c for c in ("list_date", "first_event_date") if c in candidates.columns]
+    return candidates[columns].apply(pd.to_datetime).min(axis=1)
+
+
+def _dated_splits(splits: pd.DataFrame) -> pd.DataFrame:
+    return splits.assign(execution_date=_as_dates(splits["execution_date"]))
 
 
 def _as_dates(column: pd.Series) -> pd.Series:

@@ -19,7 +19,13 @@ from vpa.data.universe import (
     snapshot_in_force,
     snapshot_path,
 )
-from vpa.signal.universe import UniverseRules, is_rebalance_date, select_universe
+from vpa.signal.universe import (
+    UniverseRules,
+    is_rebalance_date,
+    prescreen,
+    select_universe,
+    share_count_date,
+)
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "universe" / "securities.csv"
 
@@ -36,7 +42,7 @@ def load_fixture() -> pd.DataFrame:
 
 
 def securities_of(fixture: pd.DataFrame) -> pd.DataFrame:
-    return fixture[["ticker", "type", "primary_exchange", "market_cap", "list_date"]]
+    return fixture[["ticker", "type", "primary_exchange", "weighted_shares", "list_date"]]
 
 
 def bars_for(ticker: str, close: float, volume: float, days: int = 80) -> pd.DataFrame:
@@ -58,7 +64,8 @@ def one_stock(ticker: str = "FAKEX") -> pd.DataFrame:
             "ticker": [ticker],
             "type": ["CS"],
             "primary_exchange": ["XNYS"],
-            "market_cap": [10e9],
+            # 500m shares: a $10bn company at $20, $25bn at $50.
+            "weighted_shares": [5e8],
             "list_date": [date(2015, 1, 2)],
         }
     )
@@ -105,7 +112,8 @@ def test_only_the_top_n_are_kept():
 def test_every_excluded_stock_is_accounted_for_by_a_step():
     fixture = load_fixture()
     result = select_universe(REBALANCE, securities_of(fixture), fixture_bars(fixture), NO_SPLITS)
-    assert list(result.removed_by_step.values()) == [1, 3, 2, 3, 1, 1, 0]
+    # exchange, type, price, dollar volume, history, market cap, top N
+    assert list(result.removed_by_step.values()) == [1, 3, 1, 1, 2, 3, 0]
     assert sum(result.removed_by_step.values()) + len(result.selected) == len(fixture)
 
 
@@ -127,6 +135,7 @@ def test_defaults_are_the_concept_v2_section_2_numbers():
     assert rules.min_close == 10
     assert rules.min_history_sessions == 250
     assert rules.top_n == 400
+    assert rules.share_count_lag_days == 105
 
 
 # --- no look-ahead: nothing from the rebalance date or later is used --------
@@ -211,11 +220,12 @@ def test_a_split_inside_the_window_does_not_distort_dollar_volume_or_price():
 def test_price_floor_uses_splits_in_effect_on_the_rebalance_date():
     # 1-for-10 reverse split taking effect on the rebalance date: the $2
     # raw close is $20 once adjusted, so the stock passes the $10 floor.
+    # (5bn shares before the split = 500m after: a $10bn company.)
     bars = bars_for("FAKEX", 2, 1e7)
     splits = pd.DataFrame(
         [{"ticker": "FAKEX", "execution_date": REBALANCE, "split_from": 10, "split_to": 1}]
     )
-    result = select_universe(REBALANCE, one_stock(), bars, splits)
+    result = select_universe(REBALANCE, one_stock().assign(weighted_shares=5e9), bars, splits)
     assert result.selected["close"].iloc[0] == pytest.approx(20)
 
 
@@ -227,6 +237,85 @@ def test_splits_after_the_rebalance_date_are_not_applied():
     )
     result = select_universe(REBALANCE, one_stock(), bars, splits)
     assert selected_tickers(result) == []
+
+
+# --- point-in-time market cap (LEDGER-1 amendment) ----------------------------
+
+
+def test_share_counts_are_taken_105_days_before_the_as_of_session():
+    # As of Fri 29 Aug 2025, minus 105 calendar days.
+    assert share_count_date(REBALANCE) == date(2025, 5, 16)
+
+
+def test_market_cap_is_shares_times_our_previous_close():
+    result = select_universe(REBALANCE, one_stock(), bars_for("FAKEX", 20, 1e6), NO_SPLITS)
+    assert result.selected["market_cap"].iloc[0] == 10e9
+    assert result.selected["share_count_date"].iloc[0] == date(2025, 5, 16)
+
+
+def test_shares_are_adjusted_for_splits_after_the_share_count_date():
+    # A 2-for-1 split on 1 July, after the 16 May share count: 500m shares
+    # then are 1bn now. At $20 that's $20bn, not $10bn.
+    splits = pd.DataFrame(
+        [{"ticker": "FAKEX", "execution_date": date(2025, 7, 1), "split_from": 1, "split_to": 2}]
+    )
+    bars = bars_for("FAKEX", 20, 1e6)  # the window starts after 1 July
+    result = select_universe(REBALANCE, one_stock(), bars, splits)
+    assert result.selected["market_cap"].iloc[0] == 20e9
+
+
+def test_splits_before_the_share_count_date_are_already_in_the_share_count():
+    splits = pd.DataFrame(
+        [{"ticker": "FAKEX", "execution_date": date(2025, 5, 1), "split_from": 1, "split_to": 2}]
+    )
+    result = select_universe(REBALANCE, one_stock(), bars_for("FAKEX", 20, 1e6), splits)
+    assert result.selected["market_cap"].iloc[0] == 10e9
+
+
+def test_missing_share_count_means_market_cap_unknown_and_exclusion():
+    securities = one_stock().assign(weighted_shares=None)
+    result = select_universe(REBALANCE, securities, bars_for("FAKEX", 20, 1e6), NO_SPLITS)
+    assert selected_tickers(result) == []
+
+
+# --- listing date (LEDGER-1 amendment) ---------------------------------------
+
+
+def test_listing_date_is_the_earlier_of_vendor_date_and_first_ticker_event():
+    # Vendor says listed recently (the symbol changed), but the company's
+    # first ticker event is years earlier: it has plenty of history.
+    securities = one_stock().assign(
+        list_date=[date(2025, 6, 2)], first_event_date=[date(2012, 5, 18)]
+    )
+    result = select_universe(REBALANCE, securities, bars_for("FAKEX", 20, 1e6), NO_SPLITS)
+    assert result.selected["listing_date"].iloc[0] == date(2012, 5, 18)
+
+
+def test_either_listing_source_alone_is_enough():
+    only_event = one_stock().assign(list_date=[None], first_event_date=[date(2012, 5, 18)])
+    result = select_universe(REBALANCE, only_event, bars_for("FAKEX", 20, 1e6), NO_SPLITS)
+    assert selected_tickers(result) == ["FAKEX"]
+
+
+# --- prescreen ---------------------------------------------------------------
+
+
+def test_prescreen_needs_no_listing_dates_or_share_counts():
+    fixture = load_fixture()
+    cheap_only = fixture[["ticker", "type", "primary_exchange"]]
+    passed = prescreen(REBALANCE, cheap_only, fixture_bars(fixture), NO_SPLITS)
+    # Everything except exchange/type/price/dollar-volume failures.
+    assert set(passed) == set(fixture["ticker"]) - {
+        "FAKEARCA", "FAKEETF", "FAKEADR", "FAKEPFD", "FAKECHEAP", "FAKETHIN"
+    }  # fmt: skip
+
+
+def test_prescreen_never_drops_a_stock_the_full_selection_would_keep():
+    fixture = load_fixture()
+    bars = fixture_bars(fixture)
+    passed = prescreen(REBALANCE, securities_of(fixture), bars, NO_SPLITS)
+    result = select_universe(REBALANCE, securities_of(fixture), bars, NO_SPLITS)
+    assert set(selected_tickers(result)) <= set(passed)
 
 
 # --- rebalance dates and bad input ------------------------------------------
@@ -260,7 +349,10 @@ def test_duplicate_bars_are_refused():
 def test_missing_columns_are_refused():
     with pytest.raises(ValueError, match="missing columns"):
         select_universe(
-            REBALANCE, one_stock().drop(columns="market_cap"), bars_for("FAKEX", 20, 1e6), NO_SPLITS
+            REBALANCE,
+            one_stock().drop(columns="weighted_shares"),
+            bars_for("FAKEX", 20, 1e6),
+            NO_SPLITS,
         )
 
 
