@@ -96,3 +96,28 @@ def test_comparison_cases_come_from_stored_share_counts(tmp_path):
     cases = sc.working_cases(tmp_path, sample=5)
     assert ("FAKEOK", date(2024, 9, 17)) in cases
     assert all(t != "FAKEBAD" for t, _ in cases)
+
+
+def write_share_counts(tmp_path, day: str, tickers: list[str]) -> None:
+    write_part(
+        tmp_path, "share_counts", f"date={day}", f"run-{day}",
+        pd.DataFrame([{"key": f"F{t}", "ticker_on_date": t, "weighted_shares": 1e8,
+                       "status": "found"} for t in tickers]),
+        {},
+    )  # fmt: skip
+
+
+def test_comparison_cases_are_different_companies(tmp_path):
+    # Taking the first row of each file would pick "AAA" every time.
+    for day in ("2024-01-16", "2024-02-15", "2024-03-15", "2024-04-16"):
+        write_share_counts(tmp_path, day, ["AAA", "BBB", "CCC", "DDD", "EEE"])
+    tickers = [t for t, _ in sc.working_cases(tmp_path, sample=4)]
+    assert len(set(tickers)) == len(tickers) > 1
+
+
+def test_history_cases_ask_about_the_same_company_across_dates(tmp_path):
+    for day in ("2024-01-16", "2024-02-15", "2024-03-15", "2024-04-16"):
+        write_share_counts(tmp_path, day, ["AAA"])
+    cases = sc.history_cases(tmp_path, ["FAKEA", "FAKEB"], points=3)
+    assert sorted({t for t, _ in cases}) == ["FAKEA", "FAKEB"]
+    assert len({d for _, d in cases}) == 3

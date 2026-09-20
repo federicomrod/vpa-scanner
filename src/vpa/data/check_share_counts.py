@@ -18,6 +18,11 @@ fields it does have:
 It also samples stocks where the weighted count *was* present, and
 compares the two fields, to show how often they agree.
 
+`--history TICKER[,TICKER]` instead follows both counts for named
+companies across the whole period. That shows whether a count actually
+changes with the date asked for, or is the same number repeated - which
+would mean it is not point-in-time at all.
+
 **It only reports.** It changes no data and no rules - swapping in a
 fallback would change how market cap is defined, which is the project
 owner's decision and a ledger amendment.
@@ -97,17 +102,32 @@ def missing_cases(data_root: Path, sample: int) -> list[tuple[str, date]]:
     ]
 
 
-def working_cases(data_root: Path, sample: int) -> list[tuple[str, date]]:
-    """Cases where the weighted share count was there, for comparison."""
+def working_cases(data_root: Path, sample: int, seed: int = 0) -> list[tuple[str, date]]:
+    """Cases where the weighted share count was there, for comparison.
+
+    A different company each time: taking the first row of each file would
+    pick the same alphabetically-first ticker over and over.
+    """
     folders = sorted((data_root / "raw" / "share_counts").glob("date=*"))
     cases: list[tuple[str, date]] = []
-    for folder in folders[:: max(1, len(folders) // sample)]:
+    seen: set[str] = set()
+    for n, folder in enumerate(folders[:: max(1, len(folders) // sample)]):
         day = date.fromisoformat(folder.name.removeprefix("date="))
         stored = read_partition(data_root, "share_counts", folder.name)
-        found = stored[stored["status"] == "found"]
+        found = stored[(stored["status"] == "found") & ~stored["ticker_on_date"].isin(seen)]
         if not found.empty:
-            cases.append((found["ticker_on_date"].iloc[0], day))
+            ticker = found["ticker_on_date"].sample(1, random_state=seed + n).iloc[0]
+            seen.add(ticker)
+            cases.append((ticker, day))
     return cases[:sample]
+
+
+def history_cases(data_root: Path, tickers: list[str], points: int) -> list[tuple[str, date]]:
+    """The same companies asked about on dates spread across the period."""
+    folders = sorted((data_root / "raw" / "share_counts").glob("date=*"))
+    days = [date.fromisoformat(f.name.removeprefix("date=")) for f in folders]
+    chosen = sample_rows(days, points)
+    return [(t, d) for t in tickers for d in chosen]
 
 
 def report(client: MassiveClient, cases: list[tuple[str, date]], title: str) -> pd.DataFrame:
@@ -118,6 +138,36 @@ def report(client: MassiveClient, cases: list[tuple[str, date]], title: str) -> 
     return table
 
 
+def _save(tables: list[pd.DataFrame], data_root: Path) -> Path:
+    out = data_root / "logs" / f"share-count-check-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.csv"
+    filled = [t for t in tables if not t.empty]
+    pd.concat(filled, ignore_index=True).to_csv(out, index=False)
+    return out
+
+
+def _history_summary(history: pd.DataFrame, data_root: Path) -> int:
+    """How much each count moves over the period, per company."""
+    log.info("=" * 70)
+    log.info("DOES EACH COUNT CHANGE WITH THE DATE ASKED FOR?")
+    for ticker, rows in history.groupby("ticker"):
+        for column in ("weighted_shares", "share_class_shares"):
+            values = rows[column].dropna()
+            distinct = values.nunique()
+            spread = (values.max() / values.min() - 1) * 100 if len(values) and values.min() else 0
+            log.info(
+                "  %-6s %-18s %2d distinct value(s) over %d dates, spread %.1f%%",
+                ticker,
+                column,
+                distinct,
+                len(values),
+                spread,
+            )
+    log.info("Full results: %s", _save([history], data_root))
+    log.info("A count that never changes is not point-in-time.")
+    log.info("=" * 70)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m vpa.data.check_share_counts",
@@ -125,6 +175,11 @@ def main(argv: list[str] | None = None) -> int:
         "found none. Read-only: changes no data and no rules.",
     )
     parser.add_argument("--sample", type=int, default=15, help="Cases of each kind (default 15)")
+    parser.add_argument(
+        "--history",
+        help="Instead: follow these tickers (comma separated) across the whole period, to see "
+        "whether each count actually changes with the date asked for.",
+    )
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--secrets-file", type=Path, default=DEFAULT_SECRETS_FILE)
     args = parser.parse_args(argv)
@@ -132,17 +187,24 @@ def main(argv: list[str] | None = None) -> int:
     run_log = setup_logging(args.data_root, "check-share-counts")
     try:
         client = make_client(args.secrets_file, requests_per_second=10.0)
+        if args.history:
+            tickers = [t.strip().upper() for t in args.history.split(",") if t.strip()]
+            history = report(
+                client,
+                history_cases(args.data_root, tickers, args.sample),
+                "SHARE COUNTS OVER TIME",
+            )
+            return _history_summary(history, args.data_root)
         missing = report(client, missing_cases(args.data_root, args.sample), "NO WEIGHTED COUNT")
         working = report(client, working_cases(args.data_root, args.sample), "WEIGHTED COUNT FOUND")
     except Exception as exc:
         log.exception("SHARE COUNT CHECK FAILED: %s: %s", type(exc).__name__, exc)
         return 1
 
-    out = args.data_root / "logs" / f"share-count-check-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.csv"
-    pd.concat(
+    out = _save(
         [missing.assign(sample="no_weighted_count"), working.assign(sample="weighted_count_found")],
-        ignore_index=True,
-    ).to_csv(out, index=False)
+        args.data_root,
+    )
 
     log.info("=" * 70)
     log.info("WHERE THE UNIVERSE FOUND NO WEIGHTED SHARE COUNT (%d sampled):", len(missing))
