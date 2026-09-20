@@ -9,7 +9,7 @@ import pytest
 import requests
 
 from tests.fakes import FakeResponse
-from vpa.data.massive import MassiveClient, MassiveError
+from vpa.data.massive import MassiveClient, MassiveError, results_object, ticker_path
 from vpa.data.secrets import RedactSecrets, SecretError, load_secret
 
 FAKE_KEY = "FAKE-KEY-not-a-real-secret-123"
@@ -167,3 +167,24 @@ def test_redaction_filter_scrubs_secret_values():
     record = logging.LogRecord("x", logging.INFO, "", 0, "url %s failed", (FAKE_KEY,), None)
     RedactSecrets(FAKE_KEY).filter(record)
     assert record.getMessage() == "url [REDACTED] failed"
+
+
+# --- guards against malformed identifiers and responses ----------------------
+
+
+def test_a_blank_ticker_is_refused_before_it_becomes_a_url():
+    for bad in ("", "   ", "FAKE ", None):
+        with pytest.raises(MassiveError, match="usable ticker"):
+            ticker_path(bad)
+
+
+def test_unusual_ticker_characters_are_escaped():
+    assert ticker_path("BRK.B") == "BRK.B"
+    assert ticker_path("FAKE/X") == "FAKE%2FX"
+
+
+def test_a_list_where_one_record_was_expected_is_a_clear_error():
+    with pytest.raises(MassiveError, match="Expected one record for ticker details, got list"):
+        results_object({"results": [{"ticker": "FAKEA"}]}, "ticker details")
+    assert results_object({"results": {"ticker": "FAKEA"}}, "ticker details") == {"ticker": "FAKEA"}
+    assert results_object({}, "ticker details") == {}

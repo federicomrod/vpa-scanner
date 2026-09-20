@@ -15,6 +15,8 @@ never guesses. Every security gets a `status`:
 - `no_events`: the vendor has no ticker history for it - no stitching.
 - `events_disagree`: the vendor's history says a different symbol was in
   use on the reference date - no stitching, flagged for review.
+- `invalid_events`: the vendor's history contains an unusable symbol
+  (e.g. blank) - the timeline can't be trusted, so no stitching.
 
 Anything but `ok` falls back to the requested symbol for the whole range
 and is reported, so gaps can be audited rather than silently papered over.
@@ -31,6 +33,7 @@ STATUS_OK = "ok"
 STATUS_NO_FIGI = "no_figi"
 STATUS_NO_EVENTS = "no_events"
 STATUS_EVENTS_DISAGREE = "events_disagree"
+STATUS_INVALID_EVENTS = "invalid_events"
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,14 @@ def build_identity(
     """Make an Identity from the vendor's ticker-overview and events data."""
     if not composite_figi:
         return Identity(requested, reference_date, None, name, STATUS_NO_FIGI)
+    symbols = [
+        e.get("ticker_change", {}).get("ticker") for e in events if e.get("type") == "ticker_change"
+    ]
+    if any(not isinstance(t, str) or not t.strip() for t in symbols):
+        # Seen in real data (e.g. Talen Energy): an event with a blank
+        # symbol. Dropping it would leave a timeline that silently claims
+        # the wrong symbol for that stretch, so the history isn't used.
+        return Identity(requested, reference_date, composite_figi, name, STATUS_INVALID_EVENTS)
     changes = tuple(
         sorted(
             (

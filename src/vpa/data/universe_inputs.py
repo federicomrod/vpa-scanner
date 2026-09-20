@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from vpa.data.massive import MassiveClient, MassiveError
+from vpa.data.massive import MassiveClient, MassiveError, results_object, ticker_path
 from vpa.data.raw_store import manifests, read_partition, write_part
 from vpa.data.tickers import Identity, build_identity, fetch_ticker_events, segments
 
@@ -211,9 +211,12 @@ class SecurityInfoStore:
 
     def _fetch(self, ticker: str, figi: str | None, as_of: date) -> dict:
         try:
-            overview = self._client.get(
-                f"/v3/reference/tickers/{ticker}", {"date": as_of.isoformat()}
-            ).get("results", {})
+            overview = results_object(
+                self._client.get(
+                    f"/v3/reference/tickers/{ticker_path(ticker)}", {"date": as_of.isoformat()}
+                ),
+                f"ticker details for {ticker}",
+            )
         except MassiveError as exc:
             if exc.status_code != 404:
                 raise
@@ -283,9 +286,13 @@ def fetch_share_counts(
         ticker_then = segments(info.identity, shares_date, shares_date)[0].ticker
         row = {"key": info.key, "ticker": info.ticker, "ticker_on_date": ticker_then}
         try:
-            overview = client.get(
-                f"/v3/reference/tickers/{ticker_then}", {"date": shares_date.isoformat()}
-            ).get("results", {})
+            overview = results_object(
+                client.get(
+                    f"/v3/reference/tickers/{ticker_path(ticker_then)}",
+                    {"date": shares_date.isoformat()},
+                ),
+                f"ticker details for {ticker_then}",
+            )
         except MassiveError as exc:
             if exc.status_code != 404:
                 raise

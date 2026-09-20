@@ -7,6 +7,7 @@ from datetime import date
 
 from vpa.data.tickers import (
     STATUS_EVENTS_DISAGREE,
+    STATUS_INVALID_EVENTS,
     STATUS_NO_EVENTS,
     STATUS_NO_FIGI,
     STATUS_OK,
@@ -85,3 +86,24 @@ def test_non_ticker_change_events_are_ignored():
     events = [*EVENTS, {"type": "something_else", "date": "2025-08-25"}]
     identity = build_identity("FAKENEW", date(2025, 9, 2), "FAKEFIGI0001", "Fake Corp", events)
     assert len(identity.changes) == 2
+
+
+def test_a_blank_symbol_in_the_history_means_it_cannot_be_trusted():
+    # Seen in real vendor data for Talen Energy (TLN).
+    events = [
+        {"type": "ticker_change", "date": "2023-05-01", "ticker_change": {"ticker": ""}},
+        {"type": "ticker_change", "date": "2024-07-10", "ticker_change": {"ticker": "FAKENEW"}},
+    ]
+    identity = build_identity("FAKENEW", date(2025, 9, 2), "FAKEFIGI0001", "Fake Corp", events)
+    assert identity.status == STATUS_INVALID_EVENTS
+    assert identity.changes == ()
+    # Falls back to the requested symbol for the whole range - never "".
+    assert segments(identity, date(2024, 6, 1), date(2024, 8, 1)) == [
+        Segment("FAKENEW", date(2024, 6, 1), date(2024, 8, 1))
+    ]
+
+
+def test_a_missing_symbol_field_is_treated_the_same_way():
+    events = [{"type": "ticker_change", "date": "2023-05-01", "ticker_change": {}}]
+    identity = build_identity("FAKENEW", date(2025, 9, 2), "FAKEFIGI0001", "Fake Corp", events)
+    assert identity.status == STATUS_INVALID_EVENTS

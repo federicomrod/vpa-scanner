@@ -215,3 +215,19 @@ def test_stocks_without_usable_ticker_history_are_logged(tmp_path):
     build(api, tmp_path)
     gaps = read_log(tmp_path, "ticker_history_gaps.csv")
     assert [(r["ticker"], r["status"]) for r in gaps] == [("FAKEA", "no_events")]
+
+
+def test_a_blank_symbol_in_the_ticker_history_does_not_stop_the_build(tmp_path, caplog):
+    # Real case (Talen Energy): one ticker-change event has a blank symbol.
+    caplog.set_level(logging.INFO)
+    api = fake_market()
+    api.events["FIGI_FAKEB"] = [
+        {"type": "ticker_change", "date": "2015-01-02", "ticker_change": {"ticker": ""}},
+        {"type": "ticker_change", "date": RENAME.isoformat(), "ticker_change": {"ticker": "FAKEB"}},
+    ]
+    build(api, tmp_path)
+    assert "cannot join up FAKEB" in caplog.text
+    gaps = read_log(tmp_path, "ticker_history_gaps.csv")
+    assert [(r["ticker"], r["status"]) for r in gaps] == [("FAKEB", "invalid_events")]
+    # Not stitched, so its short history keeps it out - flagged, never guessed.
+    assert read_snapshot(tmp_path / "universe", SEPT)["ticker"].tolist() == ["FAKEA"]
