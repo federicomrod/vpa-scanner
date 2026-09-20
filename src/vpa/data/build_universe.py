@@ -42,7 +42,7 @@ import pandas as pd
 
 from vpa.data.calendar import previous_session, sessions_between, sessions_ending
 from vpa.data.ingest import make_client, record_stitch, setup_logging
-from vpa.data.massive import MassiveClient, MassiveError
+from vpa.data.massive import MassiveClient, MassiveError, results_object, ticker_path
 from vpa.data.raw_store import DEFAULT_DATA_ROOT, new_run_id
 from vpa.data.secrets import DEFAULT_SECRETS_FILE
 from vpa.data.tickers import STATUS_OK, segments
@@ -103,7 +103,7 @@ def build_month(
     securities = listed[["ticker", "type", "primary_exchange", "composite_figi", "name"]].copy()
 
     bars, splits = stitch_window(
-        bars, splits, listed, store, window, as_of, rules, data_root, run_id
+        bars, splits, listed, store, window, rebalance_date, as_of, rules, data_root, run_id
     )
 
     shortlist = prescreen(rebalance_date, securities, bars, splits)
@@ -147,6 +147,7 @@ def stitch_window(
     listed: pd.DataFrame,
     store: SecurityInfoStore,
     window: list[date],
+    rebalance_date: date,
     as_of: date,
     rules: UniverseRules,
     data_root: Path,
@@ -170,9 +171,19 @@ def stitch_window(
     if not suspects:
         return bars, splits
     infos = store.get_many(listed[listed["ticker"].isin(suspects)], as_of)
+    # These stocks are missing days in the window, so a rename is the likely
+    # cause. Any whose history can't be trusted can't be joined up, and would
+    # otherwise silently drop out of this month's list on a short history.
+    audit_ticker_history(data_root, rebalance_date, infos)
     bars, splits = bars.copy(), splits.copy()
     for ticker, info in infos.items():
         if info.identity.status != STATUS_OK:
+            log.warning(
+                "  cannot join up %s (%s): %s - its 60-day history may be incomplete",
+                ticker,
+                info.name,
+                info.identity.status,
+            )
             continue
         for segment in segments(info.identity, window[0], window[-1]):
             if segment.ticker == ticker:
@@ -283,12 +294,14 @@ def audit_market_cap(
 ) -> None:
     def vendor_cap(ticker: str) -> float | None:
         try:
-            response = client.get(f"/v3/reference/tickers/{ticker}", {"date": as_of.isoformat()})
+            response = client.get(
+                f"/v3/reference/tickers/{ticker_path(ticker)}", {"date": as_of.isoformat()}
+            )
         except MassiveError as exc:
             if exc.status_code != 404:
                 raise
             return None
-        return response.get("results", {}).get("market_cap")
+        return results_object(response, f"ticker details for {ticker}").get("market_cap")
 
     with ThreadPoolExecutor(LOOKUP_THREADS) as pool:
         vendor_caps = list(pool.map(vendor_cap, selected["ticker"]))
@@ -375,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         client = make_client(args.secrets_file, args.requests_per_second)
         run(client, args.data_root, args.universe_dir or args.data_root / "universe", months)
     except Exception as exc:
-        log.error("UNIVERSE BUILD FAILED: %s: %s", type(exc).__name__, exc)
+        log.exception("UNIVERSE BUILD FAILED: %s: %s", type(exc).__name__, exc)
         log.error("Months already built are kept. Re-run to continue.")
         return 1
     log.info("Log saved to %s", run_log)

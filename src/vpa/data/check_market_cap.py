@@ -30,7 +30,7 @@ import pandas as pd
 
 from vpa.data.calendar import previous_session, sessions_ending
 from vpa.data.ingest import TEST_RUN_TICKERS, make_client, resolve_identity, setup_logging
-from vpa.data.massive import MassiveClient, MassiveError
+from vpa.data.massive import MassiveClient, MassiveError, results_object, ticker_path
 from vpa.data.raw_store import DEFAULT_DATA_ROOT
 from vpa.data.secrets import DEFAULT_SECRETS_FILE
 from vpa.data.tickers import segments
@@ -81,7 +81,8 @@ def is_acceptable(result: str) -> bool:
 def daily_close(client: MassiveClient, ticker: str, day: date) -> float | None:
     """The unadjusted vendor daily close for `ticker` on `day`."""
     response = client.get(
-        f"/v2/aggs/ticker/{ticker}/range/1/day/{day.isoformat()}/{day.isoformat()}",
+        f"/v2/aggs/ticker/{ticker_path(ticker)}/range/1/day/"
+        f"{day.isoformat()}/{day.isoformat()}",
         {"adjusted": "false"},
     )
     results = response.get("results") or []
@@ -96,12 +97,14 @@ def check_one(
     latest_ticker = latest_ticker or ticker
     row = {"ticker": latest_ticker, "ticker_on_date": ticker, "date": day}
     try:
-        overview = client.get(f"/v3/reference/tickers/{ticker}", {"date": day.isoformat()})
+        response = client.get(
+            f"/v3/reference/tickers/{ticker_path(ticker)}", {"date": day.isoformat()}
+        )
     except MassiveError as exc:
         if exc.status_code != 404:
             raise
         return {**row, "verdict": NOT_FOUND}
-    overview = overview.get("results", {})
+    overview = results_object(response, f"ticker details for {ticker}")
     market_cap = overview.get("market_cap")
     shares = overview.get("weighted_shares_outstanding")
     implied = market_cap / shares if market_cap and shares else None
@@ -166,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             [row for t in tickers for row in check_ticker(client, t, days, latest)]
         )
     except Exception as exc:
-        log.error("MARKET CAP CHECK FAILED: %s: %s", type(exc).__name__, exc)
+        log.exception("MARKET CAP CHECK FAILED: %s: %s", type(exc).__name__, exc)
         return 1
 
     out = args.data_root / "logs" / f"market-cap-check-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.csv"

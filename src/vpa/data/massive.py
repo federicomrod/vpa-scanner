@@ -21,6 +21,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import requests
 
@@ -30,6 +31,30 @@ BASE_URL = "https://api.massive.com"
 
 #: Status codes worth retrying: rate limited, or a temporary server problem.
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+def ticker_path(ticker: str) -> str:
+    """A ticker as a URL path segment.
+
+    A blank or odd symbol would otherwise change which endpoint is being
+    called (e.g. `/v3/reference/tickers/` lists every ticker instead of
+    describing one), so it is refused here rather than silently
+    returning the wrong thing.
+    """
+    if not isinstance(ticker, str) or not ticker.strip() or ticker != ticker.strip():
+        raise MassiveError(f"Not a usable ticker symbol: {ticker!r}")
+    return quote(ticker, safe="")
+
+
+def results_object(response: dict, what: str) -> dict:
+    """The `results` object of a response, or a clear error if the vendor
+    returned something else (a list, say)."""
+    results = response.get("results")
+    if results is None:
+        return {}
+    if not isinstance(results, dict):
+        raise MassiveError(f"Expected one record for {what}, got {type(results).__name__}")
+    return results
 
 
 class HttpSession(Protocol):

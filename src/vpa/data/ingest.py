@@ -33,7 +33,7 @@ from pathlib import Path
 import pandas as pd
 
 from vpa.data.calendar import previous_session, sessions_between, sessions_ending
-from vpa.data.massive import MassiveClient
+from vpa.data.massive import MassiveClient, results_object, ticker_path
 from vpa.data.raw_store import DEFAULT_DATA_ROOT, manifests, new_run_id, write_part
 from vpa.data.secrets import DEFAULT_SECRETS_FILE, RedactSecrets, load_secret
 from vpa.data.tickers import (
@@ -83,9 +83,12 @@ class RunStats:
 def resolve_identity(client: MassiveClient, ticker: str, reference_date: date) -> Identity:
     """Look up the permanent ID and ticker history of `ticker` as of
     `reference_date`."""
-    overview = client.get(
-        f"/v3/reference/tickers/{ticker}", {"date": reference_date.isoformat()}
-    ).get("results", {})
+    overview = results_object(
+        client.get(
+            f"/v3/reference/tickers/{ticker_path(ticker)}", {"date": reference_date.isoformat()}
+        ),
+        f"ticker details for {ticker}",
+    )
     figi = overview.get("composite_figi")
     events = fetch_ticker_events(client, figi) if figi else []
     identity = build_identity(ticker, reference_date, figi, overview.get("name"), events)
@@ -107,7 +110,8 @@ def fetch_minutes(client: MassiveClient, ticker: str, start: date, end: date) ->
     """Unadjusted 1-minute bars for `ticker`, ET dates `start`..`end`."""
     rows = list(
         client.get_all(
-            f"/v2/aggs/ticker/{ticker}/range/1/minute/{start.isoformat()}/{end.isoformat()}",
+            f"/v2/aggs/ticker/{ticker_path(ticker)}/range/1/minute/"
+            f"{start.isoformat()}/{end.isoformat()}",
             {"adjusted": "false", "sort": "asc", "limit": 50000},
         )
     )
@@ -496,7 +500,7 @@ def main(argv: list[str] | None = None) -> int:
         client = make_client(args.secrets_file, args.requests_per_second)
         run(client, args.data_root, tickers, start, end, args.reference_date or end)
     except Exception as exc:
-        log.error("INGEST FAILED: %s: %s", type(exc).__name__, exc)
+        log.exception("INGEST FAILED: %s: %s", type(exc).__name__, exc)
         log.error("Nothing from an unfinished month was written. Re-run to resume.")
         return 1
     log.info("Log saved to %s", run_log)
