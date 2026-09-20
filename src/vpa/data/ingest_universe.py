@@ -188,6 +188,7 @@ def run(
     last_month: str,
     today: date,
     threads: int = LOOKUP_THREADS,
+    batch_size: int = 200,
 ) -> RunStats:
     run_id = new_run_id()
     stats = RunStats(requests_at_start=client.request_count, started=time.monotonic())
@@ -221,7 +222,7 @@ def run(
     planner = ListPlanner(targets, today, data_root, run_id)
     ingest_minutes(
         client, data_root, identities, start, end, run_id, stats,
-        planner=planner, threads=threads,
+        planner=planner, threads=threads, batch_size=batch_size,
     )  # fmt: skip
 
     symbols = {k: set(t.listed.values()) for k, t in targets.items()}
