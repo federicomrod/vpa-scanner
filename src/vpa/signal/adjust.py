@@ -21,11 +21,13 @@ import pandas as pd
 SPLIT_COLUMNS = ["ticker", "execution_date", "split_from", "split_to"]
 
 
-def split_adjust_daily(bars: pd.DataFrame, splits: pd.DataFrame, as_of: date) -> pd.DataFrame:
-    """Return a split-adjusted copy of daily bars, as of `as_of`.
+def split_adjust_daily(
+    bars: pd.DataFrame, splits: pd.DataFrame, as_of: date, ticker_column: str = "ticker"
+) -> pd.DataFrame:
+    """Return a split-adjusted copy of bars (daily or hourly), as of `as_of`.
 
-    `bars` needs columns `ticker`, `date`, `close`, `volume` (any of
-    `open`, `high`, `low` are adjusted too if present). `splits` needs
+    `bars` needs `date`, `close`, `volume` and a ticker column (any of
+    `open`, `high`, `low`, `vwap` are adjusted too if present). `splits` needs
     `ticker`, `execution_date` (the first day trading at the new share
     count), `split_from`, `split_to` - a 2-for-1 split is from=1, to=2.
 
@@ -42,14 +44,17 @@ def split_adjust_daily(bars: pd.DataFrame, splits: pd.DataFrame, as_of: date) ->
 
     adjusted = bars.copy()
     factor = pd.Series(1.0, index=adjusted.index)
-    known = splits[splits["execution_date"] <= as_of]
+    # Dates can arrive as text (from storage) or as dates; make them dates
+    # so the comparison can't silently match nothing.
+    execution = pd.to_datetime(splits["execution_date"]).dt.date
+    known = splits.assign(execution_date=execution)[execution <= as_of]
     for split in known.itertuples(index=False):
-        before_split = (adjusted["ticker"] == split.ticker) & (
+        before_split = (adjusted[ticker_column] == split.ticker) & (
             adjusted["date"] < split.execution_date
         )
         factor[before_split] *= split.split_from / split.split_to
 
-    for column in ("open", "high", "low", "close"):
+    for column in ("open", "high", "low", "close", "vwap"):
         if column in adjusted.columns:
             adjusted[column] = adjusted[column] * factor
     adjusted["volume"] = adjusted["volume"] / factor
