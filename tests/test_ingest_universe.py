@@ -153,3 +153,23 @@ def test_rerunning_downloads_nothing_already_stored(tmp_path):
     download(api, tmp_path)
     assert api.minute_calls() == []
     assert len(manifests(tmp_path, "minute", f"date={JULY[0]}")) == 1
+
+
+def test_more_securities_than_one_batch_are_all_stored(tmp_path):
+    # Each batch writes its own part of the same day's data; two batches
+    # must not collide (they did: "Refusing to overwrite raw file").
+    write_universe(tmp_path)
+    api = fake_market()
+    client = MassiveClient("FAKE-KEY", session=api, requests_per_second=1e9, sleep=lambda s: None)
+    run(
+        client,
+        tmp_path,
+        tmp_path / "universe",
+        "2025-07",
+        "2025-09",
+        TODAY,
+        threads=2,
+        batch_size=2,
+    )
+    assert keys_on(tmp_path, JULY[5]) == {"F_A", "F_B", "F_D", "F_N", "F_SPY"}
+    assert len(manifests(tmp_path, "minute", f"date={JULY[5]}")) == 3  # 5 securities, batches of 2

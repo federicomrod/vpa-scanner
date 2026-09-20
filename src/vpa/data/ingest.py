@@ -202,11 +202,15 @@ def ingest_minutes(
             len(plans),
         )
         todo = list(plans.values())
-        for first in range(0, len(todo), batch_size):
+        for batch_number, first in enumerate(range(0, len(todo), batch_size), 1):
             batch = todo[first : first + batch_size]
             with ThreadPoolExecutor(threads) as pool:
                 fetched = list(pool.map(lambda item: _fetch_planned(client, *item[:2]), batch))
-            _write_days(data_root, run_id, batch, fetched, covered, stats)
+            # Each batch writes its own part of the day's file: same run, same
+            # day, but never the same name.
+            _write_days(
+                data_root, f"{run_id}-{label}-{batch_number}", batch, fetched, covered, stats
+            )
             if len(todo) <= 20:
                 for (identity, _, _), bars in zip(batch, fetched, strict=True):
                     log.info("  %-6s %s: %s bars", identity.requested, label, f"{len(bars):,}")
@@ -235,7 +239,7 @@ def _fetch_planned(client: MassiveClient, identity: Identity, plan: list[Segment
     return bars
 
 
-def _write_days(data_root, run_id, batch, fetched, covered, stats: RunStats) -> None:
+def _write_days(data_root, part_id, batch, fetched, covered, stats: RunStats) -> None:
     """One new part per trading day, for this batch's securities."""
     bars = _concat(fetched)[MINUTE_COLUMNS]
     for day in sorted({d for _, _, days in batch for d in days}):
@@ -252,7 +256,7 @@ def _write_days(data_root, run_id, batch, fetched, covered, stats: RunStats) -> 
             data_root,
             MINUTE_DATASET,
             f"date={day.isoformat()}",
-            run_id,
+            part_id,
             day_bars,
             {
                 "dataset": MINUTE_DATASET,
