@@ -1,4 +1,4 @@
-ticker,type,primary_exchange,weighted_shares,list_date,close,volume,selected,why
+ticker,type,primary_exchange,share_class_shares,list_date,close,volume,selected,why
 FAKEA,CS,XNYS,200000000.0,2015-01-02,50,1000000,yes,passes everything (dollar volume 50m - ranked first)
 FAKEB,CS,XNAS,250000000.0,2015-01-02,20,1000000,yes,passes everything (dollar volume 20m)
 FAKEC,CS,XASE,100000000.0,2015-01-02,30,700000,yes,passes everything on NYSE American (dollar volume 21m)

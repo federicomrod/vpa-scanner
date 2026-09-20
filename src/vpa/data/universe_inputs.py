@@ -12,8 +12,11 @@ fetches data for *every* stock, but only at daily resolution:
 - `security_info`: per security, fetched once and reused - the vendor's
   listing date, and its ticker-change history (LEDGER-1 amendment 2:
   listing date = the earlier of the two).
-- `share_counts`: per security and share-count date - the vendor's
-  weighted shares outstanding (LEDGER-1 amendment 1).
+- `share_counts_v2`: per security and share-count date - the vendor's
+  share-class shares outstanding (what market cap uses, LEDGER-1
+  amendment 4) **and** its weighted count (kept for audit only, since it
+  is frozen before 2022). Both are stored so a future change of field
+  never needs another download.
 
 All of it lands in the write-once raw store, and anything already stored
 is reused rather than downloaded again.
@@ -39,6 +42,10 @@ log = logging.getLogger("vpa.universe_inputs")
 #: How many per-stock lookups run at once. The client still keeps the
 #: overall request rate; this just stops one slow reply holding up the rest.
 LOOKUP_THREADS = 8
+
+#: Share counts are stored under their own dataset name: the earlier
+#: `share_counts` holds only the weighted count and is kept as history.
+SHARE_COUNTS_DATASET = "share_counts_v2"
 
 SHARES_FOUND = "found"
 SHARES_NOT_FOUND = "not_found"
@@ -270,15 +277,18 @@ def fetch_share_counts(
     shares_date: date,
     run_id: str,
 ) -> pd.DataFrame:
-    """Weighted shares outstanding as of `shares_date` for each security,
-    asked under the ticker it used on that date. Reuses stored answers.
+    """Share counts as of `shares_date` for each security, asked under the
+    ticker it used on that date. Reuses stored answers.
+
+    Stores both the share-class count (used for market cap) and the
+    weighted count (audit only - see the module docstring).
 
     Never guesses: if the vendor doesn't know the ticker on that date, or
     answers about a different security, the share count is left empty
     (so the stock can't qualify) and the reason is recorded.
     """
     partition = f"date={shares_date}"
-    stored = read_partition(data_root, "share_counts", partition)
+    stored = read_partition(data_root, SHARE_COUNTS_DATASET, partition)
     done = set(stored["key"]) if not stored.empty else set()
     todo = [i for i in infos if i.key not in done]
 
@@ -296,21 +306,33 @@ def fetch_share_counts(
         except MassiveError as exc:
             if exc.status_code != 404:
                 raise
-            return {**row, "weighted_shares": None, "status": SHARES_NOT_FOUND}
+            return {
+                **row,
+                "share_class_shares": None,
+                "weighted_shares": None,
+                "status": SHARES_NOT_FOUND,
+            }
         figi_then = _figi(overview.get("composite_figi"))
+        empty = {"share_class_shares": None, "weighted_shares": None}
         if info.composite_figi and figi_then and figi_then != info.composite_figi:
-            return {**row, "weighted_shares": None, "status": SHARES_WRONG_SECURITY}
-        shares = overview.get("weighted_shares_outstanding")
-        status = SHARES_FOUND if shares else SHARES_MISSING
-        return {**row, "weighted_shares": shares or None, "status": status}
+            return {**row, **empty, "status": SHARES_WRONG_SECURITY}
+        share_class = overview.get("share_class_shares_outstanding")
+        weighted = overview.get("weighted_shares_outstanding")
+        return {
+            **row,
+            "share_class_shares": share_class or None,
+            "weighted_shares": weighted or None,
+            "status": SHARES_FOUND if share_class else SHARES_MISSING,
+        }
 
     if todo:
         with ThreadPoolExecutor(LOOKUP_THREADS) as pool:
             fetched = pd.DataFrame(list(pool.map(lookup, todo)))
-        fetched["weighted_shares"] = fetched["weighted_shares"].astype("float64")
+        for column in ("share_class_shares", "weighted_shares"):
+            fetched[column] = fetched[column].astype("float64")
         write_part(
-            data_root, "share_counts", partition, run_id, fetched,
-            {"dataset": "share_counts", "shares_date": shares_date.isoformat()},
+            data_root, SHARE_COUNTS_DATASET, partition, run_id, fetched,
+            {"dataset": SHARE_COUNTS_DATASET, "shares_date": shares_date.isoformat()},
         )  # fmt: skip
         stored = pd.concat([stored, fetched], ignore_index=True) if not stored.empty else fetched
     wanted = {i.key for i in infos}

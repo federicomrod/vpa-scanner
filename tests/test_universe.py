@@ -42,7 +42,7 @@ def load_fixture() -> pd.DataFrame:
 
 
 def securities_of(fixture: pd.DataFrame) -> pd.DataFrame:
-    return fixture[["ticker", "type", "primary_exchange", "weighted_shares", "list_date"]]
+    return fixture[["ticker", "type", "primary_exchange", "share_class_shares", "list_date"]]
 
 
 def bars_for(ticker: str, close: float, volume: float, days: int = 80) -> pd.DataFrame:
@@ -65,7 +65,7 @@ def one_stock(ticker: str = "FAKEX") -> pd.DataFrame:
             "type": ["CS"],
             "primary_exchange": ["XNYS"],
             # 500m shares: a $10bn company at $20, $25bn at $50.
-            "weighted_shares": [5e8],
+            "share_class_shares": [5e8],
             "list_date": [date(2015, 1, 2)],
         }
     )
@@ -225,7 +225,7 @@ def test_price_floor_uses_splits_in_effect_on_the_rebalance_date():
     splits = pd.DataFrame(
         [{"ticker": "FAKEX", "execution_date": REBALANCE, "split_from": 10, "split_to": 1}]
     )
-    result = select_universe(REBALANCE, one_stock().assign(weighted_shares=5e9), bars, splits)
+    result = select_universe(REBALANCE, one_stock().assign(share_class_shares=5e9), bars, splits)
     assert result.selected["close"].iloc[0] == pytest.approx(20)
 
 
@@ -273,7 +273,7 @@ def test_splits_before_the_share_count_date_are_already_in_the_share_count():
 
 
 def test_missing_share_count_means_market_cap_unknown_and_exclusion():
-    securities = one_stock().assign(weighted_shares=None)
+    securities = one_stock().assign(share_class_shares=None)
     result = select_universe(REBALANCE, securities, bars_for("FAKEX", 20, 1e6), NO_SPLITS)
     assert selected_tickers(result) == []
 
@@ -350,7 +350,7 @@ def test_missing_columns_are_refused():
     with pytest.raises(ValueError, match="missing columns"):
         select_universe(
             REBALANCE,
-            one_stock().drop(columns="weighted_shares"),
+            one_stock().drop(columns="share_class_shares"),
             bars_for("FAKEX", 20, 1e6),
             NO_SPLITS,
         )

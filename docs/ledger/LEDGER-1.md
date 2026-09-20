@@ -45,6 +45,9 @@ Section 4 (bar construction). The rules and thresholds live in
 
 **Replaces decision 4.** Decided by the project owner (option B of three).
 
+**Superseded in part by Amendment 4: the weighted count is replaced by
+the share-class count. The 105-day lag below still stands.**
+
 **What changed:** market cap = the vendor's weighted shares outstanding
 as of **105 calendar days before** the measurement day, adjusted for any
 split that took effect after that date, x our own previous-day close.
@@ -75,6 +78,58 @@ large disagreements for review.
 and accept the lag - rejected, contamination; (C) use SEC EDGAR
 publication dates for exact timing - more work and a second data source,
 revisit only if the staleness in (B) proves to matter.
+
+## Amendment 4 (2026-09-20): share-class count, not the weighted count
+
+**Supersedes the share-count half of Amendment 1.** Decided by the
+project owner (option A of three), with both counts now stored.
+
+**What changed:** market cap = the vendor's **share-class** shares
+outstanding as of the share-count date (still 105 calendar days back),
+brought forward through any split since, x our previous-day close.
+Amendment 1's *weighted* share count is no longer used for selection; it
+is still downloaded and stored, for audit.
+
+**Why - the evidence** (`vpa.data.check_share_counts --history`, run
+2026-09-20 on A, WSM, CROX and ALXN across 2016-2026):
+
+| | weighted count, 2016-2021 | share-class count, same dates |
+|---|---|---|
+| A | 302,000,797 on all 7 dates | 324.4m -> 303.4m, moving |
+| WSM | 72,954,519 on all 7 dates | 88.5m -> 75.1m, moving |
+| CROX | 58,847,388 on all 7 dates | 74.1m -> 62.4m, moving |
+| ALXN (acquired 2021) | absent on every date | 224.6m -> 219.2m, moving |
+
+The weighted count starts moving only in 2022 and then converges on the
+share-class count. So the vendor's weighted series appears to begin
+around 2022; for earlier dates it returns its earliest value, and for
+companies delisted before then it has none.
+
+**Consequences of leaving it as it was** (all three now removed):
+
+1. Every market cap before 2022 used a 2022 share count - future
+   information in a past decision.
+2. The error is one-sided: companies buy back shares, so old caps were
+   understated (CROX by 21%, WSM 18%, A 7% in 2016), which distorts
+   membership at both the $2bn and $50bn edges.
+3. Companies that disappeared before 2022 had no count at all and were
+   dropped. 9,327 stock-months were dropped this way; 2,842 of them had
+   the dollar volume to make the top 400, concentrated in 2017-2019.
+   That is survivorship bias in exactly the years the walk-forward
+   evaluation needs most.
+
+**Known limitation, accepted:** the share-class count covers one class of
+shares, so for a multi-class company market cap is that class's, not the
+whole company's. Such companies are detected (the two counts disagree on
+a date where both are trustworthy, 2022 onwards) and logged to
+`logs/multi_class_securities.csv`.
+
+**Cost:** the stored share data held only the weighted count, so all
+share counts are re-fetched (~190k requests, 5-6 hours) and every
+monthly list rebuilt. Both counts are stored this time, so changing
+field again would need no further downloading. Rebuilt months move the
+previous list to `universe/superseded/<run>/`; snapshots are never
+deleted.
 
 ## Amendment 2 (2026-09-19): listing date across renames - CONFIRMED
 
