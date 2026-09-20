@@ -5,6 +5,8 @@
   data loader CLAUDE.md rule 3 refers to, and the only code that reads the
   secrets file (`secrets.py`, `~/vpa-secrets/.env`) - approved by the
   project owner. It is run by the owner, never by tests or by Claude.
+- `ingest_universe.py` downloads minute bars for every universe member
+  (plus SPY) over its whole listed life, using `ingest.py`.
 - `build_universe.py` builds the monthly universe snapshots from
   whole-market data (`universe_inputs.py`); `universe.py` stores them.
 - `calendar.py` is the NYSE exchange calendar.
