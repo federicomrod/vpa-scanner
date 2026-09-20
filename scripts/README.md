@@ -36,6 +36,10 @@ chat (which gives up waiting after two minutes). `caffeinate -i` stops
 the Mac sleeping until the command finishes. If a run stops for any
 reason, start it again - anything already stored is skipped.
 
+To rebuild months already built (e.g. after a rule change), add
+`--rebuild`. The previous list is moved to `universe/superseded/<run>/`,
+never deleted.
+
 All of these print progress as they go and save a full log under
 `~/vpa-data/logs/`. Downloaded data goes to `~/vpa-data/raw/` and is never
 overwritten; running the download again only fetches what is missing.

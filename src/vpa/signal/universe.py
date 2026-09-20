@@ -12,14 +12,20 @@ Interpretations approved by the project owner (LEDGER-1):
   Nothing dated on or after the rebalance date is used.
 - Screening uses the vendor's daily bars (the whole market is screened,
   not just our 400 stocks).
-- Market cap (amended - see LEDGER-1): the vendor's share count as of
-  `share_count_lag_days` (105) calendar days before the previous trading
-  day, times our previous-day close. The vendor's own market cap is NOT
-  used: its share count can come from an SEC filing published after the
-  date asked about (look-ahead). 105 days = the longest filing deadline
-  (90 days for an annual report) plus the 15-day extension, so the
-  filing was public by the rebalance date. Shares are adjusted for
-  splits that took effect after that date.
+- Market cap (amended twice - see LEDGER-1): the vendor's **share-class**
+  shares outstanding as of `share_count_lag_days` (105) calendar days
+  before the previous trading day, times our previous-day close, with the
+  share count brought forward through any split since. The vendor's own
+  market cap is not used, and neither is its *weighted* share count: that
+  one is frozen before 2022 (the same value repeated for every earlier
+  date, and nothing at all for companies delisted before then), so it
+  would put future share counts into past decisions. The share-class
+  count moves with the date asked for. 105 days = the longest filing
+  deadline (90 days for an annual report) plus the 15-day extension, so
+  the filing behind the count was public by the rebalance date.
+  Limitation: for a company with more than one share class this is that
+  class's market cap, not the whole company's; such companies are
+  detected and logged by the universe build.
 - "250 trading days of history" is counted from the listing date: the
   earlier of the vendor's listing date and the security's first recorded
   ticker event, because the vendor's listing date may reset when a
@@ -49,7 +55,7 @@ from vpa.signal.adjust import split_adjust_daily
 SCREEN_COLUMNS = ["ticker", "type", "primary_exchange"]
 #: Also needed, but only for securities that pass `prescreen`. The
 #: optional `first_event_date` column is used for the listing date too.
-SECURITY_COLUMNS = [*SCREEN_COLUMNS, "list_date", "weighted_shares"]
+SECURITY_COLUMNS = [*SCREEN_COLUMNS, "list_date", "share_class_shares"]
 BAR_COLUMNS = ["ticker", "date", "close", "volume"]
 
 
@@ -130,8 +136,8 @@ def select_universe(
 
     `securities`: one row per ticker, as the vendor described it as of the
     previous trading day - `ticker`, `type`, `primary_exchange`, plus
-    `list_date`, optional `first_event_date` and `weighted_shares` (the
-    vendor's weighted shares outstanding as of `share_count_date`), which
+    `list_date`, optional `first_event_date` and `share_class_shares` (the
+    vendor's share-class shares outstanding as of `share_count_date`), which
     may be missing for tickers that fail `prescreen`. Must include
     since-delisted names that were trading then; that is what keeps the
     universe free of survivorship bias.
@@ -196,7 +202,7 @@ def select_universe(
 def point_in_time_market_cap(
     candidates: pd.DataFrame, splits: pd.DataFrame, shares_date: date, rebalance_date: date
 ) -> pd.Series:
-    """weighted_shares x close, with the share count brought forward
+    """share_class_shares x close, with the share count brought forward
     through any split taking effect after `shares_date` and up to the
     rebalance date - the same basis as `close`, which is split-adjusted
     as of the rebalance date."""
@@ -206,7 +212,7 @@ def point_in_time_market_cap(
     ]
     for split in later.itertuples(index=False):
         factor[candidates["ticker"] == split.ticker] *= split.split_to / split.split_from
-    return candidates["weighted_shares"] * factor * candidates["close"]
+    return candidates["share_class_shares"] * factor * candidates["close"]
 
 
 def _measure(

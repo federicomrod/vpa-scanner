@@ -18,6 +18,10 @@ Audit logs, under `<data root>/logs/` (appended to, never rewritten):
 - `share_count_problems.csv`: every shortlisted stock whose share count
   couldn't be found - it can't qualify, and is listed here rather than
   guessed at.
+- `multi_class_securities.csv`: companies whose share-class count differs
+  from their whole-company (weighted) count on a date where both are
+  trustworthy. For these, market cap is that share class only - the
+  known limitation of LEDGER-1 amendment 4.
 - `market_cap_audit.csv`: for each selected stock, our market cap next
   to the vendor's own figure for the same day. The vendor's figure is
   never used for selection (LEDGER-1 amendment 1); a big gap flags a
@@ -88,10 +92,15 @@ def build_month(
     splits: pd.DataFrame,
     store: SecurityInfoStore,
     run_id: str,
+    rebuild: bool = False,
 ) -> Path | None:
-    if snapshot_path(universe_dir, rebalance_date).exists():
-        log.info("Universe %s: already built, skipping", rebalance_date)
-        return None
+    existing = snapshot_path(universe_dir, rebalance_date)
+    if existing.exists():
+        if not rebuild:
+            log.info("Universe %s: already built, skipping", rebalance_date)
+            return None
+        superseded = _set_aside(existing, universe_dir, run_id)
+        log.info("Universe %s: rebuilding; previous list kept at %s", rebalance_date, superseded)
     rules = UniverseRules()
     as_of = previous_session(rebalance_date)
     window = sessions_ending(as_of, rules.dollar_volume_sessions)
@@ -122,16 +131,26 @@ def build_month(
     securities["first_event_date"] = securities["ticker"].map(
         lambda t: _attr(infos, t, "first_event_date")
     )
-    securities["weighted_shares"] = securities["ticker"].map(
-        lambda t: by_key["weighted_shares"].get(infos[t].key) if t in infos else None
+    securities["share_class_shares"] = securities["ticker"].map(
+        lambda t: by_key["share_class_shares"].get(infos[t].key) if t in infos else None
     )
 
     audit_ticker_history(data_root, rebalance_date, infos)
     audit_listing_dates(data_root, rebalance_date, infos)
     audit_share_counts(data_root, rebalance_date, shares, shares_date)
+    audit_share_classes(data_root, rebalance_date, shares, shares_date)
     path = build_snapshot(rebalance_date, securities, bars, splits, universe_dir, rules)
     audit_market_cap(client, data_root, read_snapshot(universe_dir, rebalance_date), as_of)
     return path
+
+
+def _set_aside(snapshot: Path, universe_dir: Path, run_id: str) -> Path:
+    """Move a snapshot into `superseded/` - never delete one."""
+    folder = universe_dir / "superseded" / run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    moved = folder / snapshot.name
+    snapshot.rename(moved)
+    return moved
 
 
 def _attr(infos: dict[str, SecurityInfo], ticker: str, name: str):
@@ -289,6 +308,35 @@ def audit_share_counts(
     )
 
 
+#: Share-class and whole-company counts differing by more than this (on a
+#: date where both are trustworthy) means more than one share class.
+MULTI_CLASS_TOLERANCE = 0.01
+
+#: The vendor's weighted count only has real history from here on, so
+#: comparing the two counts before this date says nothing.
+WEIGHTED_COUNT_TRUSTWORTHY_FROM = date(2022, 6, 1)
+
+
+def audit_share_classes(
+    data_root: Path, rebalance_date: date, shares: pd.DataFrame, shares_date: date
+) -> None:
+    """Record companies whose market cap covers one share class only."""
+    if shares_date < WEIGHTED_COUNT_TRUSTWORTHY_FROM or shares.empty:
+        return
+    both = shares.dropna(subset=["share_class_shares", "weighted_shares"])
+    ratio = both["share_class_shares"] / both["weighted_shares"]
+    multi = both[(ratio - 1).abs() > MULTI_CLASS_TOLERANCE]
+    rows = [
+        {"rebalance_date": rebalance_date, "shares_date": shares_date, "ticker": r.ticker,
+         "share_class_shares": r.share_class_shares, "weighted_shares": r.weighted_shares,
+         "share_class_fraction": r.share_class_shares / r.weighted_shares}
+        for r in multi.itertuples()
+    ]  # fmt: skip
+    _append_csv(data_root / "logs" / "multi_class_securities.csv", rows)
+    if rows:
+        log.info("  %d shortlisted stocks have more than one share class (logged)", len(rows))
+
+
 def audit_market_cap(
     client: MassiveClient, data_root: Path, selected: pd.DataFrame, as_of: date
 ) -> None:
@@ -336,7 +384,11 @@ def audit_market_cap(
 
 
 def run(
-    client: MassiveClient, data_root: Path, universe_dir: Path, months: list[date]
+    client: MassiveClient,
+    data_root: Path,
+    universe_dir: Path,
+    months: list[date],
+    rebuild: bool = False,
 ) -> list[Path]:
     run_id = new_run_id()
     started = time.monotonic()
@@ -348,7 +400,9 @@ def run(
     built = []
     for n, rebalance_date in enumerate(months, 1):
         log.info("[%d/%d]", n, len(months))
-        path = build_month(client, data_root, universe_dir, rebalance_date, splits, store, run_id)
+        path = build_month(
+            client, data_root, universe_dir, rebalance_date, splits, store, run_id, rebuild
+        )
         if path:
             built.append(path)
     elapsed = time.monotonic() - started
@@ -375,6 +429,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--universe-dir", type=Path, help="Default: <data root>/universe")
     parser.add_argument("--secrets-file", type=Path, default=DEFAULT_SECRETS_FILE)
     parser.add_argument("--requests-per-second", type=float, default=10.0)
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Rebuild months already built. The previous list is moved to "
+        "universe/superseded/<run>/ - never deleted.",
+    )
     args = parser.parse_args(argv)
 
     months = rebalance_dates(args.first_month, args.last_month)
@@ -386,7 +446,13 @@ def main(argv: list[str] | None = None) -> int:
     run_log = setup_logging(args.data_root, "build-universe")
     try:
         client = make_client(args.secrets_file, args.requests_per_second)
-        run(client, args.data_root, args.universe_dir or args.data_root / "universe", months)
+        run(
+            client,
+            args.data_root,
+            args.universe_dir or args.data_root / "universe",
+            months,
+            args.rebuild,
+        )
     except Exception as exc:
         log.exception("UNIVERSE BUILD FAILED: %s: %s", type(exc).__name__, exc)
         log.error("Months already built are kept. Re-run to continue.")

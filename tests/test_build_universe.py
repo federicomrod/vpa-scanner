@@ -11,6 +11,7 @@ import csv
 import logging
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from tests.fakes import FakeMassiveApi
@@ -65,7 +66,13 @@ def fake_market() -> FakeMassiveApi:
         then = "FAKEOLDB" if ticker == "FAKEB" else ticker
         for shares_date in (SEPT_SHARES, OCT_SHARES):
             api.overviews_on[(then, shares_date)] = (
-                {"composite_figi": figi, "weighted_shares_outstanding": shares} if shares else None
+                {
+                    "composite_figi": figi,
+                    "share_class_shares_outstanding": shares,
+                    "weighted_shares_outstanding": shares,
+                }
+                if shares
+                else None
             )
         for as_of in ("2025-08-29", "2025-09-30"):
             api.overviews_on[(ticker, as_of)] = {
@@ -201,6 +208,7 @@ def test_new_securities_in_a_later_month_are_saved_too(tmp_path):
     api.overviews["FAKEOCT"] = {"composite_figi": "FIGI_FAKEOCT", "list_date": "2015-01-02"}
     api.overviews_on[("FAKEOCT", OCT_SHARES)] = {
         "composite_figi": "FIGI_FAKEOCT",
+        "share_class_shares_outstanding": 2e8,
         "weighted_shares_outstanding": 2e8,
     }
     build(api, tmp_path, months=(SEPT, OCT))
@@ -231,3 +239,49 @@ def test_a_blank_symbol_in_the_ticker_history_does_not_stop_the_build(tmp_path, 
     assert [(r["ticker"], r["status"]) for r in gaps] == [("FAKEB", "invalid_events")]
     # Not stitched, so its short history keeps it out - flagged, never guessed.
     assert read_snapshot(tmp_path / "universe", SEPT)["ticker"].tolist() == ["FAKEA"]
+
+
+def test_market_cap_uses_the_share_class_count_not_the_weighted_one(tmp_path):
+    # The weighted count is frozen before 2022, so it must not be used.
+    api = fake_market()
+    api.overviews_on[("FAKEA", SEPT_SHARES)] = {
+        "composite_figi": "FIGI_FAKEA",
+        "share_class_shares_outstanding": 2e8,  # $10bn at $50 - qualifies
+        "weighted_shares_outstanding": 1e9,  # $50bn+ - would be excluded
+    }
+    build(api, tmp_path)
+    snapshot = read_snapshot(tmp_path / "universe", SEPT).set_index("ticker")
+    assert snapshot.loc["FAKEA", "market_cap"] == 10e9
+
+
+def test_companies_with_more_than_one_share_class_are_logged(tmp_path):
+    # Both counts trustworthy (2022+) and different: two share classes.
+    api = fake_market()
+    for shares_date in (SEPT_SHARES, OCT_SHARES):
+        api.overviews_on[("FAKEA", shares_date)] = {
+            "composite_figi": "FIGI_FAKEA",
+            "share_class_shares_outstanding": 2e8,
+            "weighted_shares_outstanding": 3.2e8,
+        }
+    build(api, tmp_path)
+    logged = read_log(tmp_path, "multi_class_securities.csv")
+    assert [(r["ticker"], round(float(r["share_class_fraction"]), 3)) for r in logged] == [
+        ("FAKEA", 0.625)
+    ]
+
+
+def test_rebuilding_keeps_the_previous_list_instead_of_deleting_it(tmp_path):
+    build(fake_market(), tmp_path)
+    first = read_snapshot(tmp_path / "universe", SEPT)["ticker"].tolist()
+
+    # Without --rebuild the month is left alone; with it, the list is
+    # written afresh and the old one is moved aside, never deleted.
+    api = fake_market()
+    run(client_for(api), tmp_path, tmp_path / "universe", [SEPT])
+    assert not (tmp_path / "universe" / "superseded").exists()
+
+    run(client_for(api), tmp_path, tmp_path / "universe", [SEPT], rebuild=True)
+    kept = list((tmp_path / "universe" / "superseded").rglob("2025-09-02.parquet"))
+    assert len(kept) == 1
+    assert pd.read_parquet(kept[0])["ticker"].tolist() == first
+    assert read_snapshot(tmp_path / "universe", SEPT)["ticker"].tolist() == first
