@@ -72,6 +72,18 @@ def test_report_flags_a_half_day(tmp_path):
     assert "12:30-13:00 (30m)" in report
 
 
+def test_a_reverse_split_is_described_as_one(tmp_path):
+    prepared(tmp_path)
+    write_part(
+        tmp_path, "splits", "fetched=2026-01-20", "run-1",
+        pd.DataFrame([{"requested_ticker": "FAKEA", "ticker": "FAKEA",
+                       "execution_date": "2025-09-08", "split_from": 5, "split_to": 1}]),
+        {},
+    )  # fmt: skip
+    report = reconcile.report_case(tmp_path, CASE, today=date(2025, 9, 30))
+    assert "5 old share(s) -> 1 new share(s) (reverse split)" in report
+
+
 def test_report_lists_splits_and_dividends_near_the_date(tmp_path):
     prepared(tmp_path)
     write_part(
@@ -87,7 +99,7 @@ def test_report_lists_splits_and_dividends_near_the_date(tmp_path):
         {},
     )  # fmt: skip
     report = reconcile.report_case(tmp_path, CASE, today=date(2025, 9, 30))
-    assert "SPLIT 2025-09-08: 1-for-2" in report
+    assert "SPLIT 2025-09-08: 1 old share(s) -> 2 new share(s) (split)" in report
     assert "DIVIDEND ex-date 2025-09-04: 0.26 per share" in report
     # The split is after this date, so the TradingView-basis table is shown too.
     assert "adjusted to today's share basis" in report

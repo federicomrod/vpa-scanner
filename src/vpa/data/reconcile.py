@@ -53,11 +53,13 @@ class Case:
 #: The cases chosen by the project owner (Section 3.3 asks for a normal
 #: day, a split, an ex-dividend day, an earnings gap and a half day).
 DEFAULT_CASES = [
-    Case("G", date(2025, 12, 2), "Normal trading day - boring control day"),
-    Case("NVDA", date(2024, 6, 10), "Stock split - first day trading after the 10-for-1 split"),
-    Case("AAPL", date(2025, 8, 11), "Ex-dividend - clean regular $0.26 ex-dividend date"),
+    Case("ITT", date(2026, 9, 2), "Normal control - ordinary session, ~$18bn"),
+    Case(
+        "AMCR", date(2026, 1, 15), "Stock split - first day trading after the 1-for-5 reverse split"
+    ),
+    Case("OHI", date(2026, 8, 3), "Ex-dividend - $0.68 ex-dividend date"),
     Case("ANF", date(2025, 1, 13), "Earnings/news gap - holiday-sales update at 07:00 ET, ICR day"),
-    Case("NVDA", date(2025, 11, 28), "Half day - day after Thanksgiving, closes 13:00 ET"),
+    Case("OHI", date(2025, 11, 28), "Half day - day after Thanksgiving, closes 13:00 ET"),
 ]
 
 
@@ -203,9 +205,11 @@ def report_case(data_root: Path, case: Case, today: date | None = None) -> str:
 
     events = corporate_actions(data_root, case.ticker, case.day)
     for row in events["splits"].itertuples():
+        kind = "reverse split" if row.split_to < row.split_from else "split"
         out.append(
-            f"SPLIT {row.execution_date}: {row.split_from:g}-for-{row.split_to:g}"
-            " (prices before this date are on the old share basis)"
+            f"SPLIT {row.execution_date}: {row.split_from:g} old share(s) -> "
+            f"{row.split_to:g} new share(s) ({kind}); prices before this date are on the "
+            "old share basis"
         )
     for row in events["dividends"].itertuples():
         out.append(
