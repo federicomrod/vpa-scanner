@@ -95,7 +95,8 @@ def read_partition(data_root: Path, dataset: str, partition: str) -> pd.DataFram
         tables.append(pd.read_parquet(path))
     for orphan in sorted({p.name for p in folder.glob("part-*.parquet")} - listed):
         log.warning("Ignoring incomplete part with no manifest: %s", folder / orphan)
-    return pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+    filled = [t for t in tables if not t.empty]
+    return pd.concat(filled, ignore_index=True) if filled else pd.DataFrame()
 
 
 def sha256_of(path: Path) -> str:
