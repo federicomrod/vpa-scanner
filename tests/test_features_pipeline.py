@@ -11,7 +11,15 @@ import pandas as pd
 import pytest
 
 from vpa.data.bars import DAILY, HOURLY, derived_path
-from vpa.data.features import MARKET_TICKER, build, features_path, hourly_features, securities_in
+from vpa.data.features import (
+    MARKET_TICKER,
+    build,
+    completed,
+    features_path,
+    hourly_features,
+    securities_in,
+    shard_of,
+)
 from vpa.signal.sequence import COLUMNS as SEQUENCE_COLUMNS
 from vpa.signal.volume import HOURLY_COLUMNS as VOLUME_COLUMNS
 
@@ -95,18 +103,23 @@ def prepared(tmp_path):
 # --- what the pipeline produces ----------------------------------------------
 
 
-def test_it_writes_one_file_per_session_per_batch(prepared):
+def shard_for(key: str) -> int:
+    return shard_of(key)
+
+
+def test_it_writes_one_file_per_session_per_shard(prepared):
     store, days = prepared
     build(store, days)
+    shard = shard_for("FIGI_FAKEA")
     for day in days:
-        assert features_path(store, HOURLY, day, "0001").exists()
-        assert features_path(store, DAILY, day, "0001").exists()
+        assert features_path(store, HOURLY, day, shard).exists()
+        assert features_path(store, DAILY, day, shard).exists()
 
 
 def test_every_section_5_feature_is_present(prepared):
     store, days = prepared
     build(store, days)
-    features = pd.read_parquet(features_path(store, HOURLY, days[-1], "0001"))
+    features = pd.read_parquet(features_path(store, HOURLY, days[-1], shard_for("FIGI_FAKEA")))
     for column in [*VOLUME_COLUMNS, *SEQUENCE_COLUMNS]:
         assert column in features.columns
     expected = [
@@ -121,20 +134,34 @@ def test_every_section_5_feature_is_present(prepared):
 def test_each_row_says_which_security_and_bar_it_describes(prepared):
     store, days = prepared
     build(store, days)
-    features = pd.read_parquet(features_path(store, HOURLY, days[-1], "0001"))
-    assert set(features["security_key"]) == {"FIGI_FAKEA", "FIGI_FAKEB", f"FIGI_{MARKET_TICKER}"}
-    assert sorted(features["slot_index"].unique()) == list(range(SLOTS))
-    assert (features["date"] == days[-1]).all()
+    everything = pd.concat(
+        [
+            pd.read_parquet(p)
+            for p in (store / "derived/features/hourly" / f"date={days[-1]}").glob(
+                "shard-*.parquet"
+            )
+        ]
+    )
+    assert set(everything["security_key"]) == {"FIGI_FAKEA", "FIGI_FAKEB", f"FIGI_{MARKET_TICKER}"}
+    assert sorted(everything["slot_index"].unique()) == list(range(SLOTS))
+    assert (everything["date"] == days[-1]).all()
 
 
-def test_securities_are_split_into_batches(prepared):
+def test_a_securitys_shard_depends_only_on_its_own_key():
+    # The bug this replaces: batches numbered by position, so "0001" held
+    # different securities depending on how the job was run - and a
+    # re-run then skipped work it had never done.
+    assert shard_of("FIGI_FAKEA") == shard_of("FIGI_FAKEA")
+    assert 0 <= shard_of("FIGI_FAKEB") < 24
+
+
+def test_shards_do_not_overlap(prepared):
     store, days = prepared
-    build(store, days, batch_size=2)
-    assert features_path(store, HOURLY, days[-1], "0001").exists()
-    assert features_path(store, HOURLY, days[-1], "0002").exists()
-    first = pd.read_parquet(features_path(store, HOURLY, days[-1], "0001"))
-    second = pd.read_parquet(features_path(store, HOURLY, days[-1], "0002"))
-    assert set(first["security_key"]).isdisjoint(second["security_key"])
+    build(store, days)
+    seen = {}
+    for path in (store / "derived/features/hourly" / f"date={days[-1]}").glob("shard-*.parquet"):
+        for key in pd.read_parquet(path, columns=["security_key"])["security_key"]:
+            assert seen.setdefault(key, path) == path
 
 
 def test_a_second_run_skips_work_already_done(prepared):
@@ -142,6 +169,17 @@ def test_a_second_run_skips_work_already_done(prepared):
     assert build(store, days) > 0
     assert build(store, days) == 0
     assert build(store, days, rebuild=True) > 0
+
+
+def test_a_different_range_of_sessions_is_not_treated_as_done(prepared):
+    store, days = prepared
+    build(store, days[:40])
+    assert completed(store)[f"{shard_for('FIGI_FAKEA'):02d}"] == [
+        days[0].isoformat(),
+        days[39].isoformat(),
+    ]
+    # Asking for more sessions must recompute, not skip.
+    assert build(store, days) > 0
 
 
 def test_features_match_computing_them_directly(prepared):
@@ -163,7 +201,7 @@ def test_features_match_computing_them_directly(prepared):
         market_h.reset_index(drop=True),
         market_d.reset_index(drop=True),
     )
-    stored = pd.read_parquet(features_path(store, HOURLY, days[-1], "0001"))
+    stored = pd.read_parquet(features_path(store, HOURLY, days[-1], shard_for("FIGI_FAKEA")))
     stored = stored[stored["security_key"] == "FIGI_FAKEA"]
     assert stored["vol_pct_slot_60"].to_numpy() == pytest.approx(
         expected[expected["date"] == days[-1]]["vol_pct_slot_60"].to_numpy(), nan_ok=True
@@ -190,7 +228,7 @@ def test_securities_are_found_from_the_stored_bars(prepared):
 def test_round_number_distance_uses_prices_as_traded(prepared):
     store, days = prepared
     build(store, days)
-    features = pd.read_parquet(features_path(store, HOURLY, days[-1], "0001"))
+    features = pd.read_parquet(features_path(store, HOURLY, days[-1], shard_for("FIGI_FAKEA")))
     distances = features["dist_round_number"].dropna()
     assert not distances.empty
     # A distance to the nearest half dollar can never exceed 0.25 of a

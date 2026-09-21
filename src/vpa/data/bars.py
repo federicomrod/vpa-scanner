@@ -10,6 +10,12 @@ one file per session:
 Derived data is **regenerable**, unlike the raw store: rebuilding a
 session replaces its file. Nothing here ever writes to `raw/`.
 
+Each session records which raw parts it was built from, so a session
+built when only some securities had been downloaded is rebuilt
+automatically once the rest arrive. Deciding "already built" from the
+file's existence alone is how a session ends up holding ten securities
+when the raw store has a thousand.
+
 Prices are stored exactly as traded. `read_bars(..., as_of=...)` applies
 split adjustment at read time (Concept v2 Section 3.1), using the splits
 in the raw corporate-actions tables, and never dividend adjustment.
@@ -20,6 +26,7 @@ Run it with `uv run python -m vpa.data.bars --help`.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -39,9 +46,34 @@ log = logging.getLogger("vpa.bars")
 
 HOURLY, DAILY = "hourly", "daily"
 
+#: The raw dataset bars are built from.
+MINUTE_DATASET = "minute"
+
 
 def derived_path(data_root: Path, kind: str, session: date) -> Path:
     return data_root / "derived" / kind / f"date={session.isoformat()}" / "bars.parquet"
+
+
+def sources_path(data_root: Path, session: date) -> Path:
+    """Where a session records the raw parts its bars were built from."""
+    return data_root / "derived" / HOURLY / f"date={session.isoformat()}" / "sources.json"
+
+
+def raw_parts(data_root: Path, session: date) -> list[str]:
+    """The raw minute parts currently stored for a session."""
+    folder = data_root / "raw" / MINUTE_DATASET / f"date={session.isoformat()}"
+    return sorted(p.name for p in folder.glob("part-*.manifest.json"))
+
+
+def needs_building(data_root: Path, session: date) -> bool:
+    """Whether a session has no bars, or has bars built from less raw
+    data than is now stored."""
+    if not derived_path(data_root, HOURLY, session).exists():
+        return True
+    recorded = sources_path(data_root, session)
+    if not recorded.exists():
+        return True  # built before sources were tracked: rebuild once
+    return json.loads(recorded.read_text()) != raw_parts(data_root, session)
 
 
 def session_bounds_for(session: date) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -80,6 +112,7 @@ def build_session(data_root: Path, session: date) -> tuple[int, int]:
     daily = daily_bars(minutes, session_open, session_close)
     _write(derived_path(data_root, HOURLY, session), hourly)
     _write(derived_path(data_root, DAILY, session), daily)
+    sources_path(data_root, session).write_text(json.dumps(raw_parts(data_root, session)))
     return len(hourly), len(daily)
 
 
@@ -89,7 +122,7 @@ def build(data_root: Path, sessions: list[date], rebuild: bool = False) -> int:
     built = 0
     started = timer.monotonic()
     for n, session in enumerate(sessions, 1):
-        if not rebuild and derived_path(data_root, HOURLY, session).exists():
+        if not rebuild and not needs_building(data_root, session):
             continue
         hourly, daily = build_session(data_root, session)
         built += 1
