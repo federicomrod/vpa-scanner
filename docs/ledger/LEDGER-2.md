@@ -202,6 +202,23 @@ LEDGER-1.
 - **The nearest level is chosen per bar**, so two hours of one session
   can be measured against different levels if price moved between them.
 
+### Computing features over a long history (the pipeline)
+
+- **The whole history is split-adjusted once, as of today**, rather than
+  separately for each bar's own date. The two differ only by a constant
+  factor applied to every bar in a window, and percentiles and
+  ATR-unit ratios are blind to that; a split inside a window is applied
+  identically either way.
+- **`dist_round_number` is the exception** and is computed from prices
+  as traded, with an unadjusted ATR: nearness to a whole or half dollar
+  is a fact about the price at the time, and $10.40 before a 2-for-1
+  split is $5.20 in today's money.
+- **`vol_z_slot_60` is invariant only to about 1e-5** for a stock
+  trading 50,000 shares an hour, because Section 5.1's `log(volume + 1)`
+  is not exactly proportional. It reaches 1e-2 only around 50 shares an
+  hour, far below the universe's $15m-a-day floor, and no Section 7
+  filter reads the z-score. Recorded rather than engineered around.
+
 ### Section 5.7 (sequence)
 
 - **"The trailing 5 bars" excludes the bar being measured**, as
