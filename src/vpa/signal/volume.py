@@ -35,6 +35,7 @@ from vpa.signal.windows import (
     baseline_valid,
     log_volume,
     measurable,
+    min_valid,
     trailing_percentile,
     trailing_robust_z,
 )
@@ -47,18 +48,8 @@ SLOT_WINDOW_SHORT = 20
 DAILY_WINDOW_LONG = 120
 DAILY_WINDOW_SHORT = 20
 
-#: Section 5.1 requires "≥40 valid observations" for the 60-session
-#: window and is silent about the others. The same two-thirds is carried
-#: across: 40 of 60, 14 of 20, 80 of 120 (LEDGER-2 - flagged for review).
-MIN_VALID_FRACTION = 2 / 3
-
 HOURLY_COLUMNS = ["vol_pct_slot_60", "vol_pct_slot_20", "vol_z_slot_60"]
 DAILY_COLUMNS = ["vol_pct_d_120", "vol_pct_d_20", "vol_z_d_120"]
-
-
-def min_valid(window: int) -> int:
-    """How many valid observations a window of this size needs."""
-    return int(np.ceil(window * MIN_VALID_FRACTION))
 
 
 def hourly_volume_features(bars: pd.DataFrame) -> pd.DataFrame:
