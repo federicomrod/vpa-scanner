@@ -48,6 +48,8 @@ everything else uses the adjusted series. Recorded in LEDGER-2.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
 import sys
 import time
@@ -83,15 +85,45 @@ log = logging.getLogger("vpa.features")
 #: The market every stock is measured against (Section 5.5).
 MARKET_TICKER = "SPY"
 
-#: Securities computed at a time. Keeps memory flat; the only cost of a
-#: smaller batch is more, smaller output files.
-BATCH_SIZE = 100
+#: Securities are divided into a fixed number of shards by their own key
+#: - about fifty each, which keeps peak memory near 3 GB for a ten-year
+#: history -
+#: so which securities share a file never depends on how the job was run.
+#: An earlier version numbered batches 0001, 0002... which meant the same
+#: file name held different securities at different batch sizes - and a
+#: re-run then skipped work it had never done.
+SHARD_COUNT = 24
+
 
 IDENTITY = ["security_key", "requested_ticker", "date"]
 
 
-def features_path(data_root: Path, kind: str, session: date, batch: str) -> Path:
-    return data_root / "derived" / "features" / kind / f"date={session}" / f"part-{batch}.parquet"
+def shard_of(security_key: str) -> int:
+    """Which shard a security belongs to - fixed by its key alone."""
+    digest = hashlib.sha1(security_key.encode()).hexdigest()
+    return int(digest, 16) % SHARD_COUNT
+
+
+def features_path(data_root: Path, kind: str, session: date, shard: int | str) -> Path:
+    name = shard if isinstance(shard, str) else f"{shard:02d}"
+    return data_root / "derived" / "features" / kind / f"date={session}" / f"shard-{name}.parquet"
+
+
+def index_path(data_root: Path) -> Path:
+    """Records which shards have been computed, and over which sessions."""
+    return data_root / "derived" / "features" / "index.json"
+
+
+def completed(data_root: Path) -> dict[str, list[str]]:
+    path = index_path(data_root)
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def _record(data_root: Path, shard: int, sessions: list[date]) -> None:
+    done = completed(data_root)
+    done[f"{shard:02d}"] = [sessions[0].isoformat(), sessions[-1].isoformat()]
+    index_path(data_root).parent.mkdir(parents=True, exist_ok=True)
+    index_path(data_root).write_text(json.dumps(done, indent=2, sort_keys=True))
 
 
 def hourly_features(
@@ -194,34 +226,41 @@ def securities_in(data_root: Path, sessions: list[date]) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True).drop_duplicates("security_key")
 
 
-def build(
-    data_root: Path, sessions: list[date], batch_size: int = BATCH_SIZE, rebuild: bool = False
-) -> int:
-    """Compute and store features for every security over `sessions`."""
+def build(data_root: Path, sessions: list[date], rebuild: bool = False) -> int:
+    """Compute and store features for every security over `sessions`.
+
+    Work is divided into fixed shards, and a shard is skipped only if the
+    index says it has already been computed over exactly these sessions.
+    """
     started = time.monotonic()
     securities = securities_in(data_root, sessions)
     keys = sorted(securities["security_key"])
-    log.info("Securities with bars: %d over %d sessions", len(keys), len(sessions))
+    by_shard: dict[int, list[str]] = {}
+    for key in keys:
+        by_shard.setdefault(shard_of(key), []).append(key)
+    log.info(
+        "Securities with bars: %d over %d sessions, in %d shards",
+        len(keys), len(sessions), len(by_shard),
+    )  # fmt: skip
 
     market = {kind: _read_market(data_root, kind, sessions) for kind in (HOURLY, DAILY)}
     if market[DAILY].empty:
         raise ValueError(f"No {MARKET_TICKER} bars stored - Section 5.5 needs them")
 
+    done = completed(data_root)
+    wanted = [sessions[0].isoformat(), sessions[-1].isoformat()]
     written = 0
-    for number, start in enumerate(range(0, len(keys), batch_size), 1):
-        batch = keys[start : start + batch_size]
-        label = f"{number:04d}"
-        if not rebuild and features_path(data_root, HOURLY, sessions[-1], label).exists():
-            log.info("Batch %s: already built, skipping", label)
+    for number, (shard, batch) in enumerate(sorted(by_shard.items()), 1):
+        label = f"{shard:02d}"
+        if not rebuild and done.get(label) == wanted:
+            log.info("Shard %s: already computed over these sessions, skipping", label)
             continue
-        written += _build_batch(data_root, sessions, batch, label, market)
+        written += _build_batch(data_root, sessions, batch, shard, market)
+        _record(data_root, shard, sessions)
         log.info(
-            "Batch %s of %d done (%d securities, %.0fs so far)",
-            label,
-            (len(keys) + batch_size - 1) // batch_size,
-            len(batch),
-            time.monotonic() - started,
-        )
+            "Shard %s (%d of %d) done: %d securities, %.0fs so far",
+            label, number, len(by_shard), len(batch), time.monotonic() - started,
+        )  # fmt: skip
     log.info("Wrote %d feature files in %.0fs", written, time.monotonic() - started)
     return written
 
@@ -236,7 +275,7 @@ def _read_market(data_root: Path, kind: str, sessions: list[date]) -> pd.DataFra
 
 
 def _build_batch(
-    data_root: Path, sessions: list[date], batch: list[str], label: str, market: dict
+    data_root: Path, sessions: list[date], batch: list[str], shard: int, market: dict
 ) -> int:
     adjusted = {
         kind: _read_batch(data_root, kind, sessions, batch, adjust=True) for kind in (HOURLY, DAILY)
@@ -262,7 +301,7 @@ def _build_batch(
             continue
         everything = pd.concat(rows, ignore_index=True)
         for session, day_features in everything.groupby("date", sort=True):
-            path = features_path(data_root, kind, session, label)
+            path = features_path(data_root, kind, session, shard)
             path.parent.mkdir(parents=True, exist_ok=True)
             day_features.reset_index(drop=True).to_parquet(path, index=False)
             written += 1
@@ -310,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--start", type=date.fromisoformat, help="First session (YYYY-MM-DD)")
     parser.add_argument("--end", type=date.fromisoformat, help="Last session (YYYY-MM-DD)")
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+
     parser.add_argument("--rebuild", action="store_true", help="Recompute batches already stored")
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     args = parser.parse_args(argv)
@@ -328,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         if not sessions:
             log.error("FEATURE BUILD FAILED: no bars built for those dates")
             return 1
-        build(args.data_root, sessions, args.batch_size, args.rebuild)
+        build(args.data_root, sessions, args.rebuild)
     except Exception as exc:
         log.exception("FEATURE BUILD FAILED: %s: %s", type(exc).__name__, exc)
         return 1
