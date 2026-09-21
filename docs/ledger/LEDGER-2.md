@@ -170,3 +170,23 @@ LEDGER-1.
 - **"Prior week" and "prior month" mean the last completed one**, never
   the one in progress; the 20- and 60-day extremes exclude the current
   session.
+
+### Section 5.6 (structure - pivots and volume at price)
+
+- **Pivots are found on daily bars** - they are chart-level landmarks,
+  and Section 7 measures them in daily ATR.
+- **A pivot exists only once the counter-move completes.** At the moment
+  a high is made nobody knows it is a top, so the pivot dates from the
+  session where price has fallen 1.5 x ATR from it, not from the extreme
+  itself. A feature for a session uses only pivots confirmed before it.
+- **The counter-move is measured against the daily ATR in force when the
+  counter-move happens**, so the filter scales with the stock's own
+  volatility, as Section 5.6's "scale-invariant" intends. A counter-move
+  of exactly 1.5 x ATR confirms.
+- **`dist_nearest_swing_pivot` is the distance to the nearer of the last
+  confirmed pivot high and pivot low.** The pivot high is also kept
+  separately, because Family B names it specifically.
+- **The histogram** spans the trailing 60 sessions' lowest low to
+  highest high in 50 equal bins, fed by hourly bars, each bar's whole
+  volume going to the bin holding its close (decision 6). The node is
+  the heaviest bin and the distance is to its centre.
