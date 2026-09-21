@@ -137,3 +137,22 @@ LEDGER-1.
 - **Half-day bars keep `ret_atr` and `progress_*`** but not
   `cum_vol_pct_*` or `efficiency`, which rest on volume baselines
   (decision 2).
+
+### Section 5.5 (market-relative)
+
+- **Units.** Section 5.5 writes `(ret - beta x ret_SPY) / atr20`, but a
+  stock's move in dollars cannot be subtracted from the market's move in
+  percent. SPY's return is converted into the stock's own money first -
+  `beta x ret_SPY x previous close` - and the leftover dollars divided
+  by `atr20`. This is the only dimensionally coherent reading, and it
+  leaves `resid_ret_atr` on the same scale as `ret_atr`, which is what
+  Section 7 compares (it applies the same ≤ 0.25 threshold to both).
+- **"Refreshed weekly"** means fitted on the first trading day of each
+  week and held for the rest of it. The fit uses returns through the
+  previous session, so the value in force on a Monday knows nothing of
+  that Monday. When a week starts on a holiday, the refresh happens on
+  its first trading day.
+- **A beta needs 40 of the 60 trailing daily returns**, the same floor
+  as Section 5.1; below that `beta_60` and `resid_ret_atr` are null.
+- **The daily beta is applied to hourly bars** (decision 4), with SPY's
+  return taken over the matching hour.
