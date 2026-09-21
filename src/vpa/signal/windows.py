@@ -140,6 +140,21 @@ def trailing_robust_z(
     return np.where((counts >= min_valid) & (spread > 0), score, np.nan)
 
 
+def trailing_median(
+    values: pd.Series | np.ndarray,
+    valid: np.ndarray,
+    window: int,
+    min_valid: int,
+) -> np.ndarray:
+    """The median of each bar's trailing window - the "usual" level to
+    compare the bar against. Null where there are too few observations."""
+    past = _windows(np.asarray(values, dtype=float), valid, window)
+    counts = np.count_nonzero(~np.isnan(past), axis=1)
+    with warnings_suppressed():
+        median = np.nanmedian(past, axis=1)
+    return np.where(counts >= min_valid, median, np.nan)
+
+
 class warnings_suppressed:
     """Quietens numpy's "all-NaN slice" warning: an empty window is an
     expected state at the start of a history, not a problem."""

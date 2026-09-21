@@ -120,3 +120,20 @@ LEDGER-1.
 - **`body_frac`, `upper_wick_frac` and `lower_wick_frac` are measured
   against the true range**, as Section 5.3 specifies, so on a gap bar
   they sum to less than 1 - the missing part is the gap itself.
+
+### Section 5.4 (price progress)
+
+- **"The trailing N bars" means this bar and the N-1 before it**, and
+  the net move across them is measured from the close before that
+  stretch began. So `progress_3` needs four closes, and is null until
+  they exist.
+- **A stretch counts only if every bar in it is a valid observation.**
+  A three-bar volume total that includes a dead or half-day hour is
+  neither compared against other stretches nor offered as one of them.
+- **"Median slot volume" is the median over the same trailing 60
+  sessions and slot as Section 5.1**, with the same validity rules. The
+  0.1 floor that Section 5.4 specifies then does its job: without it a
+  near-dormant stock would show enormous efficiency.
+- **Half-day bars keep `ret_atr` and `progress_*`** but not
+  `cum_vol_pct_*` or `efficiency`, which rest on volume baselines
+  (decision 2).
