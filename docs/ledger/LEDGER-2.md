@@ -190,3 +190,28 @@ LEDGER-1.
   highest high in 50 equal bins, fed by hourly bars, each bar's whole
   volume going to the bin holding its close (decision 6). The node is
   the heaviest bin and the distance is to its centre.
+
+### Section 5.6 (structure - the nearest level)
+
+- **Age is counted in daily sessions** and dates from the session that
+  **set** the level - the session that made the 20-day high, or made the
+  prior week's high, or the swing pivot's own extreme.
+- **A touch is a session whose high-low range contains the level**,
+  counted over the trailing 60 sessions (the window Section 5.6 uses
+  elsewhere); the session being measured is not counted.
+- **The nearest level is chosen per bar**, so two hours of one session
+  can be measured against different levels if price moved between them.
+
+### Section 5.7 (sequence)
+
+- **"The trailing 5 bars" excludes the bar being measured**, as
+  everywhere else in Section 5. A bar's own busy-and-narrow shape is
+  already in its own features; the count says what led up to it.
+- **"The prior 10-bar high close" is the highest close among those ten
+  bars**, not the close of whichever bar made the high.
+- **These are hourly features.** Section 5.7 names `vol_pct_slot_60` and
+  `spread_atr`, both hourly measures, and Section 7 applies them to
+  hourly candidates.
+- **Too little history gives "unknown", not "did not happen".** A failed
+  new high needs ten bars behind it; with fewer, the flag is null rather
+  than false.
