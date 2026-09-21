@@ -31,6 +31,17 @@ import numpy as np
 import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 
+#: Section 5.1 requires "≥40 valid observations" for a 60-session window
+#: and is silent about the others; the same two-thirds is carried across
+#: (14 of 20, 80 of 120) - LEDGER-2, flagged for review.
+MIN_VALID_FRACTION = 2 / 3
+
+
+def min_valid(window: int) -> int:
+    """How many valid observations a window of this size needs."""
+    return int(np.ceil(window * MIN_VALID_FRACTION))
+
+
 #: Scales the median absolute deviation to match a standard deviation
 #: for normally distributed data (Concept v2 Section 5.1).
 MAD_TO_SIGMA = 1.4826
