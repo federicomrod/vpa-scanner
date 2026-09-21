@@ -120,3 +120,98 @@ LEDGER-1.
 - **`body_frac`, `upper_wick_frac` and `lower_wick_frac` are measured
   against the true range**, as Section 5.3 specifies, so on a gap bar
   they sum to less than 1 - the missing part is the gap itself.
+
+### Section 5.4 (price progress)
+
+- **"The trailing N bars" means this bar and the N-1 before it**, and
+  the net move across them is measured from the close before that
+  stretch began. So `progress_3` needs four closes, and is null until
+  they exist.
+- **A stretch counts only if every bar in it is a valid observation.**
+  A three-bar volume total that includes a dead or half-day hour is
+  neither compared against other stretches nor offered as one of them.
+- **"Median slot volume" is the median over the same trailing 60
+  sessions and slot as Section 5.1**, with the same validity rules. The
+  0.1 floor that Section 5.4 specifies then does its job: without it a
+  near-dormant stock would show enormous efficiency.
+- **Half-day bars keep `ret_atr` and `progress_*`** but not
+  `cum_vol_pct_*` or `efficiency`, which rest on volume baselines
+  (decision 2).
+
+### Section 5.5 (market-relative)
+
+- **Units.** Section 5.5 writes `(ret - beta x ret_SPY) / atr20`, but a
+  stock's move in dollars cannot be subtracted from the market's move in
+  percent. SPY's return is converted into the stock's own money first -
+  `beta x ret_SPY x previous close` - and the leftover dollars divided
+  by `atr20`. This is the only dimensionally coherent reading, and it
+  leaves `resid_ret_atr` on the same scale as `ret_atr`, which is what
+  Section 7 compares (it applies the same ≤ 0.25 threshold to both).
+- **"Refreshed weekly"** means fitted on the first trading day of each
+  week and held for the rest of it. The fit uses returns through the
+  previous session, so the value in force on a Monday knows nothing of
+  that Monday. When a week starts on a holiday, the refresh happens on
+  its first trading day.
+- **A beta needs 40 of the 60 trailing daily returns**, the same floor
+  as Section 5.1; below that `beta_60` and `resid_ret_atr` are null.
+- **The daily beta is applied to hourly bars** (decision 4), with SPY's
+  return taken over the matching hour.
+
+### Section 5.6 (structure - levels)
+
+- **Every distance is in daily ATR units**, hourly bars included.
+  Section 7's location tests say "daily ATR" explicitly, so an hourly
+  bar is measured against its session's daily ATR.
+- **Distances are signed**: `(close - level) / daily ATR`, positive
+  above the level. Section 7 compares the magnitude; the sign is kept
+  because "just above the 20-day high" and "just below it" are
+  different situations, and Section 5.6 asks for continuous distances
+  rather than flags.
+- **"Prior week" and "prior month" mean the last completed one**, never
+  the one in progress; the 20- and 60-day extremes exclude the current
+  session.
+
+### Section 5.6 (structure - pivots and volume at price)
+
+- **Pivots are found on daily bars** - they are chart-level landmarks,
+  and Section 7 measures them in daily ATR.
+- **A pivot exists only once the counter-move completes.** At the moment
+  a high is made nobody knows it is a top, so the pivot dates from the
+  session where price has fallen 1.5 x ATR from it, not from the extreme
+  itself. A feature for a session uses only pivots confirmed before it.
+- **The counter-move is measured against the daily ATR in force when the
+  counter-move happens**, so the filter scales with the stock's own
+  volatility, as Section 5.6's "scale-invariant" intends. A counter-move
+  of exactly 1.5 x ATR confirms.
+- **`dist_nearest_swing_pivot` is the distance to the nearer of the last
+  confirmed pivot high and pivot low.** The pivot high is also kept
+  separately, because Family B names it specifically.
+- **The histogram** spans the trailing 60 sessions' lowest low to
+  highest high in 50 equal bins, fed by hourly bars, each bar's whole
+  volume going to the bin holding its close (decision 6). The node is
+  the heaviest bin and the distance is to its centre.
+
+### Section 5.6 (structure - the nearest level)
+
+- **Age is counted in daily sessions** and dates from the session that
+  **set** the level - the session that made the 20-day high, or made the
+  prior week's high, or the swing pivot's own extreme.
+- **A touch is a session whose high-low range contains the level**,
+  counted over the trailing 60 sessions (the window Section 5.6 uses
+  elsewhere); the session being measured is not counted.
+- **The nearest level is chosen per bar**, so two hours of one session
+  can be measured against different levels if price moved between them.
+
+### Section 5.7 (sequence)
+
+- **"The trailing 5 bars" excludes the bar being measured**, as
+  everywhere else in Section 5. A bar's own busy-and-narrow shape is
+  already in its own features; the count says what led up to it.
+- **"The prior 10-bar high close" is the highest close among those ten
+  bars**, not the close of whichever bar made the high.
+- **These are hourly features.** Section 5.7 names `vol_pct_slot_60` and
+  `spread_atr`, both hourly measures, and Section 7 applies them to
+  hourly candidates.
+- **Too little history gives "unknown", not "did not happen".** A failed
+  new high needs ten bars behind it; with fewer, the flag is null rather
+  than false.
