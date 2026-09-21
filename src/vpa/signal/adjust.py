@@ -43,16 +43,31 @@ def split_adjust_daily(
         raise ValueError("splits table has a non-positive split_from/split_to")
 
     adjusted = bars.copy()
-    factor = pd.Series(1.0, index=adjusted.index)
     # Dates can arrive as text (from storage) or as dates; make them dates
     # so the comparison can't silently match nothing.
     execution = pd.to_datetime(splits["execution_date"]).dt.date
     known = splits.assign(execution_date=execution)[execution <= as_of]
-    for split in known.itertuples(index=False):
-        before_split = (adjusted[ticker_column] == split.ticker) & (
-            adjusted["date"] < split.execution_date
+
+    # Each bar's factor is the product of every split that took effect
+    # after it. Done as a merge rather than a loop over splits, because
+    # a ten-year history has millions of bars and thousands of splits.
+    factor = pd.Series(1.0, index=adjusted.index)
+    if not known.empty:
+        pairs = (
+            adjusted[[ticker_column, "date"]]
+            .reset_index(names="_row")
+            .merge(
+                known[["ticker", "execution_date", "split_from", "split_to"]],
+                left_on=ticker_column,
+                right_on="ticker",
+                how="inner",
+            )
         )
-        factor[before_split] *= split.split_from / split.split_to
+        applies = pairs[pairs["date"] < pairs["execution_date"]]
+        if not applies.empty:
+            ratios = applies["split_from"] / applies["split_to"]
+            product = ratios.groupby(applies["_row"]).prod()
+            factor.loc[product.index] = product.to_numpy()
 
     for column in ("open", "high", "low", "close", "vwap"):
         if column in adjusted.columns:

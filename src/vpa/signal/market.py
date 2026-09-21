@@ -58,7 +58,9 @@ COLUMNS = [
 def daily_returns(bars: pd.DataFrame) -> pd.Series:
     """Close-to-close returns as fractions, indexed by session date."""
     closes = bars.set_index("date")["close"].astype(float)
-    return closes.pct_change()
+    # fill_method=None: a missing close leaves an unknown return, rather
+    # than being padded into a fabricated zero-return session.
+    return closes.pct_change(fill_method=None)
 
 
 def rolling_beta(stock: pd.Series, market: pd.Series) -> pd.Series:
@@ -162,7 +164,7 @@ def _market_return_per_bar(bars: pd.DataFrame, market_bars: pd.DataFrame) -> np.
     """SPY's return over the same bar, matched by date (and slot, hourly)."""
     keys = ["date", "slot_index"] if "slot_index" in bars.columns else ["date"]
     market = market_bars.sort_values(keys).copy()
-    market["market_return"] = market["close"].astype(float).pct_change()
+    market["market_return"] = market["close"].astype(float).pct_change(fill_method=None)
     matched = bars[keys].merge(market[[*keys, "market_return"]], on=keys, how="left")
     return matched["market_return"].to_numpy(dtype=float)
 
@@ -170,4 +172,4 @@ def _market_return_per_bar(bars: pd.DataFrame, market_bars: pd.DataFrame) -> np.
 def _daily_market_return(market_bars: pd.DataFrame) -> pd.Series:
     """SPY's return for each session, from its closing bar."""
     closes = market_bars.sort_values("date").groupby("date")["close"].last().astype(float)
-    return closes.pct_change()
+    return closes.pct_change(fill_method=None)
