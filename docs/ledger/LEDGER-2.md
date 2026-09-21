@@ -156,3 +156,17 @@ LEDGER-1.
   as Section 5.1; below that `beta_60` and `resid_ret_atr` are null.
 - **The daily beta is applied to hourly bars** (decision 4), with SPY's
   return taken over the matching hour.
+
+### Section 5.6 (structure - levels)
+
+- **Every distance is in daily ATR units**, hourly bars included.
+  Section 7's location tests say "daily ATR" explicitly, so an hourly
+  bar is measured against its session's daily ATR.
+- **Distances are signed**: `(close - level) / daily ATR`, positive
+  above the level. Section 7 compares the magnitude; the sign is kept
+  because "just above the 20-day high" and "just below it" are
+  different situations, and Section 5.6 asks for continuous distances
+  rather than flags.
+- **"Prior week" and "prior month" mean the last completed one**, never
+  the one in progress; the 20- and 60-day extremes exclude the current
+  session.
