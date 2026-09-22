@@ -207,3 +207,107 @@ Thirteen deliberate breaks, each confirmed to fail the tests:
 - **Forward-looking earnings dates.** EDGAR is a record of what was
   filed, so it cannot say a company reports *tomorrow*. The live morning
   scan will need a forward calendar; historical validation does not.
+
+---
+
+## Amendment 1 (2026-09-22): macro flags, and two bugs the work exposed
+
+**Class:** new code in the frozen area (`vpa.signal.events`), plus a
+correction to a rule shipped in the original entry. Section 6's macro
+flags - FOMC, CPI, non-farm payrolls - are now implemented.
+
+### The date table is committed, not fetched
+
+Ten years is 350-odd dates. Recalling them is out of the question and
+fetching them at scan time would put the morning report at the mercy of
+two government websites, so they are fetched once, checked, and
+committed as `reference/macro-events.csv`. The build refuses to write
+when a year comes back empty or a BLS release turns up at an unexpected
+hour, both of which mean a page changed shape and was parsed wrongly.
+
+Sources: federalreserve.gov for FOMC, bls.gov's yearly release schedule
+for the other two.
+
+### Deciding what counts as an FOMC decision - without my judgement
+
+Not every dated Fed announcement is a policy decision. March 2020 alone
+published statements on the 3rd, 15th, 19th, 23rd and 31st. Minutes do
+not settle it: they cover the eight scheduled meetings, so they miss the
+emergency cut of 3 March and lag the most recent meeting by three weeks.
+
+**The Fed labels them itself.** A policy statement from the Committee is
+titled "Federal Reserve issues FOMC statement", and that exact wording
+has been used for every one from 2016 to 2026, scheduled and emergency
+alike, while framework updates, facility announcements and regulatory
+rules are titled differently. Each statement page is fetched and kept on
+its own title. I originally intended to hand the ambiguous dates to the
+project owner to classify; the Fed's own naming made that unnecessary,
+which is better - it is reproducible.
+
+Result: 88 FOMC days over eleven years. 2020 has ten, correctly - the 3
+and 23 March emergency statements are in; the 19 and 31 March facility
+announcements and the 27 August framework update are out.
+
+**Cross-check kept:** every meeting that published minutes must have a
+statement behind it, or the build stops. It passes.
+
+### Bug 1: news from before the store landed on its first session
+
+`searchsorted` returns position 0 for any date before the range, so
+**every release older than the store was pinned to the store's first
+session**. Companies file 8-Ks back to 2004. Measured in the table
+shipped with the original entry: **739 of 817 securities carried an
+earnings flag on 2016-10-03**, and 740 on the 4th, against 3 to 8 on an
+ordinary day.
+
+Fixed: news with no session to react to comes back as unknown at both
+ends of the range, not just the late end. After the fix, 4 and 8.
+
+It was caught because the macro flags made it visible - the first
+session came back flagged for FOMC, CPI *and* payrolls at once, which is
+impossible. The same bug had been sitting in the earnings flag,
+unnoticed, through a full review and a green CI run.
+
+### Bug 2: the open was the boundary, and it should have been the close
+
+The original rule read: published before 09:30, this session trades on
+it; at or after 09:30, the next one. That is right for a release after
+the close and **wrong for one during the session** - the market is open
+and reacts within the minute.
+
+Measured over the store's 75,995 results filings:
+
+| when the filing was accepted | share |
+|---|---|
+| before the open | 43.5% |
+| **during the session** | **13.9%** |
+| at or after the close | 42.6% |
+
+So roughly one earnings day in seven was being attributed to the wrong
+session. The rule is now: **published before the close, that session;
+at or after the close, the next one.** The open does not come into it.
+
+Half days close at 13:00, so the boundary moves with them; the close
+times come from `vpa.signal.bars`, so only one place says when trading
+stops.
+
+### A macro flag is never unknown
+
+Unlike a company's earnings, the release calendar is complete - every
+one of these is scheduled and published in advance - so a quiet day is a
+known-quiet day, and `any_event` can rely on it.
+
+### Deliberately not included
+
+**Forward-looking dates.** The table ends where the published schedules
+end. The live morning scan will need the next FOMC and CPI dates ahead
+of time; that is a production concern, recorded with the same gap for
+earnings dates.
+
+### How this was checked
+
+67 tests, no network. The two bugs above each have a regression test
+naming the measured numbers. The rebuilt table was checked against the
+store: 2,434,142 rows, the first sessions back to normal, OHI's 16:18 ET
+filing still flagging 5, 6 and 7 February 2025, and 3 March 2020 and 16
+March 2020 both flagged FOMC for every security.
