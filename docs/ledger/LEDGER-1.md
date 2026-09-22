@@ -151,3 +151,54 @@ the history and market-cap checks, so share counts and listing dates are
 only looked up for stocks that could still qualify. All checks must
 pass either way, so this changes only which check a rejected stock is
 counted under - never which stocks are selected.
+
+## Amendment 5 (2026-09-22): foreign private issuers stay in - CONSIDERED AND DECLINED
+
+**No change to Section 2.** Recorded because the change was proposed by
+the project owner and deliberately not made; the next person to notice
+these securities should find the reasoning rather than re-open it.
+
+**What was proposed:** exclude the 71 universe members that are foreign
+private issuers, on the same footing as Section 2 rule 3's exclusion of
+ADRs, for the same reason - their earnings dates cannot be verified.
+
+**Why it was declined.** Three things came up when the proposal was
+costed:
+
+**1. We could not identify them honestly the quick way.** The 71 are
+known only because they have no 8-K item 2.02 filing anywhere in the ten
+years - a fact assembled in 2026. Using it to build the 2017 universe is
+look-ahead of exactly the kind that would make every downstream number
+untrustworthy. It is fixable: foreign private issuers file 20-F or 40-F
+annual reports, so "has filed a 20-F before this rebalance date" is
+knowable on the date and provable from EDGAR. But it is a required extra
+step, not a detail, and any future attempt at this exclusion must take
+it.
+
+**2. The stated reason cuts wider than the 71.** LEDGER-4 decision 7
+found 53 ordinary US companies - Urban Outfitters, Energy Fuels, Echo
+Global, DISH among them - whose earnings dates we equally cannot verify,
+because they file results under item 8.01 instead of 2.02. A rule that
+excludes foreign issuers for unverifiable earnings while keeping Urban
+Outfitters is narrower than its own rationale.
+
+**3. The protection already exists.** LEDGER-4's three-state earnings
+flag marks both groups unknown rather than false. Section 11 drops
+unknown days from validation, and the production report says "earnings
+status unknown" rather than implying a clean day. Exclusion would buy
+the same protection at the cost of a full rebuild - universe, minute
+bars for the 100-200 replacement securities, features, events - and
+would invalidate LEDGER-3's measured candidate yield, which was taken
+on the universe as it stands.
+
+**What would justify revisiting it.** Not data availability, which is
+handled. The stronger argument is market structure: many foreign issuers
+report **semi-annually rather than quarterly**, so their information
+genuinely arrives on a different cadence, and Section 2's mid-cap
+rationale is about genuine single-name order flow. If that turns out to
+matter, the exclusion is worth the rebuild - and it should be argued on
+those grounds, with the 20-F test above, not on verification difficulty.
+
+**Scale, for whoever reads this next:** 71 securities, 1,569 of 46,400
+universe member-months (3.4%), a median of 13 of 400 per month, trending
+from 11 in 2017 to 17 in 2026.
