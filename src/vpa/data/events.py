@@ -18,6 +18,9 @@ facts they need and writes the answers out.
 - **index_change**, **halt** - no historical source exists; recorded as
   unknown for everyone, on every day (LEDGER-4).
 - **the calendar flags** - derived from the sessions themselves.
+- **fomc**, **cpi**, **payrolls** - `reference/macro-events.csv`, the
+  checked table `vpa.data.macro` builds from the Federal Reserve and the
+  BLS and commits to the repository. Nothing here touches the network.
 
 ### What "unknown" means here
 
@@ -58,15 +61,18 @@ import pandas as pd
 from vpa.data.bars import DAILY, derived_path
 from vpa.data.edgar import CIK_DATASET, FILINGS_DATASET
 from vpa.data.ingest import setup_logging
+from vpa.data.macro import read_table
 from vpa.data.raw_store import DEFAULT_DATA_ROOT, read_partition
 from vpa.signal.events import (
     ALL_FLAGS,
     CALENDAR_FLAGS,
+    MACRO_FLAGS,
     STALE_AFTER_SESSIONS,
     UNAVAILABLE_FLAGS,
     any_event,
     calendar_flags,
     earnings_window,
+    macro_flags,
     reacting_sessions,
     trusted_sessions,
 )
@@ -129,7 +135,7 @@ def dated_events(table: pd.DataFrame, column: str) -> dict[str, set[date]]:
 
 
 def earnings_by_security(
-    filings: pd.DataFrame, sessions: list[date]
+    filings: pd.DataFrame, sessions: list[date], half_days: set[date] | None = None
 ) -> tuple[dict[str, set[date]], dict[str, set[date]]]:
     """Per security: the sessions its earnings flag is true on, and the
     sessions the flag can be trusted to be false on.
@@ -143,7 +149,7 @@ def earnings_by_security(
     """
     if filings.empty:
         return {}, {}
-    reacting = reacting_sessions(filings["accepted_utc"], sessions)
+    reacting = reacting_sessions(filings["accepted_utc"], sessions, half_days)
     flagged: dict[str, set[date]] = {}
     trusted: dict[str, set[date]] = {}
     for key, announcements in reacting.groupby(filings["security_key"]):
@@ -172,7 +178,8 @@ def build(data_root: Path, sessions: list[date], rebuild: bool = False) -> int:
         int(ciks["cik"].notna().sum()) if not ciks.empty else 0,
     )  # fmt: skip
 
-    earnings, trusted = earnings_by_security(filings, sessions)
+    half_days = half_days_in(data_root, sessions)
+    earnings, trusted = earnings_by_security(filings, sessions, half_days)
     ex_dividends = dated_events(load_dataset(data_root, "dividends"), "ex_dividend_date")
     splits = dated_events(load_dataset(data_root, "splits"), "execution_date")
     log.info(
@@ -180,8 +187,14 @@ def build(data_root: Path, sessions: list[date], rebuild: bool = False) -> int:
         len(trusted), len(ex_dividends), len(splits),
     )  # fmt: skip
 
-    half_days = half_days_in(data_root, sessions)
     calendar = calendar_flags(sessions, half_days).set_index("date")
+    releases = [(e.day, e.kind, e.time_et) for e in read_table()]
+    macro = macro_flags(sessions, releases, half_days).set_index("date")
+    log.info(
+        "Macro releases in the committed table: %d, of which %d land in these sessions",
+        len(releases), int(macro[MACRO_FLAGS].any(axis=1).sum()),
+    )  # fmt: skip
+    calendar = calendar.join(macro)
 
     written = 0
     for n, session in enumerate(todo, 1):
@@ -245,7 +258,7 @@ def session_rows(
     )
     for flag in UNAVAILABLE_FLAGS:
         rows[flag] = pd.array([pd.NA] * len(rows), dtype="boolean")
-    for flag in CALENDAR_FLAGS:
+    for flag in [*CALENDAR_FLAGS, *MACRO_FLAGS]:
         rows[flag] = pd.array([calendar[flag]] * len(rows), dtype="boolean")
     rows["any_event"] = any_event(rows)
     return rows[COLUMNS]

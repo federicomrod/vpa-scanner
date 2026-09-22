@@ -52,6 +52,8 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
+from vpa.signal.bars import HALF_DAY_CLOSE, REGULAR_CLOSE
+
 #: Sessions either side of an announcement that are flagged: Section 6's
 #: "earnings (D-1, D0, D+1)".
 EARNINGS_WINDOW = 1
@@ -75,32 +77,44 @@ CALENDAR_FLAGS = [
     "day_after_holiday",
 ]
 
+#: Scheduled economic events that move the whole market (Section 6).
+#: Their dates come from the committed table built by `vpa.data.macro`
+#: from the Federal Reserve and the BLS - never from recollection
+#: (LEDGER-4, amendment 1).
+MACRO_FLAGS = ["fomc", "cpi", "payrolls"]
+
 #: Flags with no historical source for anyone, ever (LEDGER-4). They are
 #: recorded as always-unknown columns and excluded from `any_event`.
 UNAVAILABLE_FLAGS = ["index_change", "halt"]
 
-ALL_FLAGS = [*COMPANY_FLAGS, *CALENDAR_FLAGS]
+ALL_FLAGS = [*COMPANY_FLAGS, *CALENDAR_FLAGS, *MACRO_FLAGS]
 
 #: The flags `any_event` is computed from: everything with a source.
 OBSERVABLE_FLAGS = [flag for flag in ALL_FLAGS if flag not in UNAVAILABLE_FLAGS]
 
-#: Before this time, a release has been published ahead of the opening
-#: bell and the same session trades on it.
-MARKET_OPEN_ET = pd.Timestamp("09:30").time()
+#: Session close times come from Section 4's definition of a session, so
+#: there is one place that says when trading stops.
 
 
-def reacting_sessions(accepted_utc: pd.Series, sessions: Sequence[date]) -> pd.Series:
+def reacting_sessions(
+    accepted_utc: pd.Series, sessions: Sequence[date], half_days: set[date] | None = None
+) -> pd.Series:
     """The session that first traded on each announcement.
 
-    A release accepted before the opening bell is traded that same
-    session; one accepted during or after it - the common case, as most
-    companies report after the close - is first traded the next session.
-    Weekends and holidays fall out of this without special handling,
-    because only sessions are candidates (LEDGER-4).
+    **The close is what matters, not the open.** A release published at
+    07:38 and one published at 12:00 are both traded by the session they
+    land in - the first at the bell, the second within the minute. Only a
+    release at or after the close waits for the next session.
 
-    `sessions` must be ordered and cover the range. An announcement with
-    no session at or after it - one filed after the last session we hold
-    - comes back as NaT rather than being pinned to the final session.
+    Getting this wrong is not a rounding error. Measured over the store's
+    75,995 results filings: 43.5% arrive before the open, 42.6% after the
+    close, and **13.9% during the session** - and an earlier version of
+    this function pushed all of that middle group to the following day
+    (LEDGER-4, amendment 1).
+
+    Weekends and holidays fall out without special handling, because only
+    sessions are candidates. An announcement with no session to react to
+    - before the first we hold, or after the last - comes back as NaT.
     """
     if accepted_utc.empty:
         return pd.Series([], index=accepted_utc.index, dtype="object")
@@ -108,15 +122,72 @@ def reacting_sessions(accepted_utc: pd.Series, sessions: Sequence[date]) -> pd.S
         "America/New_York"
     )
     ordered = np.array(sessions, dtype="object")
-    reacting = []
-    for day, at_or_after_the_open in zip(
-        eastern.dt.date, eastern.dt.time >= MARKET_OPEN_ET, strict=True
-    ):
-        # "right" steps past the announcement's own day, so only a later
-        # session can react; "left" lets that day react if it is one.
-        at = int(np.searchsorted(ordered, day, "right" if at_or_after_the_open else "left"))
-        reacting.append(ordered[at] if at < len(ordered) else pd.NaT)
+    reacting = [
+        _reacting_session(day, clock, ordered, half_days or set())
+        for day, clock in zip(eastern.dt.date, eastern.dt.time, strict=True)
+    ]
     return pd.Series(reacting, index=accepted_utc.index, dtype="object")
+
+
+def _reacting_session(day: date, clock, ordered, half_days: set[date]) -> date:
+    """The first session that could trade on news released at `clock` on
+    `day`.
+
+    "left" lets that day react if it is a session; "right" steps past it,
+    so only a later session can.
+
+    News from outside the range comes back as NaT at **both** ends, and
+    the earlier end is the one that bites. Without the check, every
+    release before the first session we hold lands on that first session:
+    a company with filings back to 2004 would show an earnings day on the
+    first morning of the store, and so would every other company, all at
+    once. Measured before this guard was added: 739 of 817 securities
+    flagged on 2016-10-03, against 3 to 8 on an ordinary day.
+    """
+    if len(ordered) == 0 or day < ordered[0]:
+        return pd.NaT
+    close = HALF_DAY_CLOSE if day in half_days else REGULAR_CLOSE
+    before_the_close = clock is None or clock < close
+    at = int(np.searchsorted(ordered, day, side="left" if before_the_close else "right"))
+    return ordered[at] if at < len(ordered) else pd.NaT
+
+
+def macro_flags(
+    sessions: Sequence[date],
+    releases: Sequence[tuple[date, str, str]],
+    half_days: set[date] | None = None,
+) -> pd.DataFrame:
+    """Section 6's macro events, one row per session.
+
+    `releases` is (date, kind, time in ET) as the committed table records
+    them. The release date is not always the session that traded on it:
+    the CPI and payrolls come out at 08:30 and an FOMC decision at 14:00,
+    so in both cases that same session reacts - but the FOMC's emergency
+    statement of Sunday 15 March 2020 was first traded on the Monday. The
+    same rule decides all three.
+
+    A session with no release of a given kind is a plain false, never
+    unknown: unlike a company's earnings, the release calendar is
+    complete - every one of these is scheduled and published in advance.
+    """
+    ordered = np.array(sessions, dtype="object")
+    flagged: dict[str, set[date]] = {kind: set() for kind in MACRO_FLAGS}
+    for day, kind, time_et in releases:
+        if kind not in flagged:
+            raise ValueError(f"Unknown macro event kind {kind!r}; expected one of {MACRO_FLAGS}")
+        session = _reacting_session(day, _clock(time_et), ordered, half_days or set())
+        if not pd.isna(session):
+            flagged[kind].add(session)
+    frame = pd.DataFrame({"date": list(sessions)})
+    for kind in MACRO_FLAGS:
+        frame[kind] = pd.array([s in flagged[kind] for s in sessions], dtype="boolean")
+    return frame
+
+
+def _clock(time_et: str):
+    """A release time in ET, or None where the table records none - in
+    which case the release is taken to have landed during the session."""
+    return pd.Timestamp(time_et).time() if time_et else None
 
 
 def earnings_window(announcements: Sequence[date], sessions: Sequence[date]) -> set[date]:

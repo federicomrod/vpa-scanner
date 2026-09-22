@@ -8,6 +8,7 @@ against FAKE bars in a temporary folder. No network. See CLAUDE.md rule 4.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 
 import pandas as pd
@@ -21,17 +22,20 @@ from vpa.data.events import (
     events_path,
     report_coverage,
 )
+from vpa.data.macro import read_table
 from vpa.data.raw_store import write_part
 from vpa.signal.events import (
     ALL_FLAGS,
     CALENDAR_FLAGS,
     EARNINGS_WINDOW,
+    MACRO_FLAGS,
     OBSERVABLE_FLAGS,
     STALE_AFTER_SESSIONS,
     UNAVAILABLE_FLAGS,
     any_event,
     calendar_flags,
     earnings_window,
+    macro_flags,
     option_expiries,
     reacting_sessions,
     third_friday,
@@ -68,12 +72,36 @@ def test_a_release_before_the_open_is_traded_the_same_session():
     assert list(reacting) == [date(2025, 2, 27)]
 
 
-def test_the_opening_bell_itself_counts_as_too_late():
-    # 09:30:00 ET exactly: the session has begun, so it is the next one.
-    at_the_bell = reacting_sessions(accepted("2025-02-27T14:30:00.000Z"), SESSIONS_2025)
-    a_minute_before = reacting_sessions(accepted("2025-02-27T14:29:00.000Z"), SESSIONS_2025)
+def test_a_release_during_the_session_is_traded_that_session():
+    # 12:00 ET on Thursday 27 February 2025. The market is open and
+    # reacts within the minute; waiting for the next day is simply wrong.
+    # 13.9% of the store's 75,995 filings land in this window.
+    reacting = reacting_sessions(accepted("2025-02-27T17:00:00.000Z"), SESSIONS_2025)
+    assert list(reacting) == [date(2025, 2, 27)]
+
+
+def test_the_closing_bell_is_the_boundary():
+    # 16:00:00 ET exactly: too late for this session. 15:59, and it is
+    # traded today.
+    at_the_bell = reacting_sessions(accepted("2025-02-27T21:00:00.000Z"), SESSIONS_2025)
+    a_minute_before = reacting_sessions(accepted("2025-02-27T20:59:00.000Z"), SESSIONS_2025)
     assert list(at_the_bell) == [date(2025, 2, 28)]
     assert list(a_minute_before) == [date(2025, 2, 27)]
+
+
+def test_a_half_day_closes_early_and_the_boundary_moves_with_it():
+    # The day after Thanksgiving 2024 closed at 13:00 ET, so a 14:00
+    # release is after the close, not during the session.
+    sessions = sessions_between(date(2024, 11, 20), date(2024, 12, 10))
+    half = {date(2024, 11, 29)}
+    after = reacting_sessions(accepted("2024-11-29T19:00:00.000Z"), sessions, half)
+    during = reacting_sessions(accepted("2024-11-29T17:00:00.000Z"), sessions, half)
+    assert list(after) == [date(2024, 12, 2)]
+    assert list(during) == [date(2024, 11, 29)]
+    # Treated as a normal day, the same release would have been intraday.
+    assert list(reacting_sessions(accepted("2024-11-29T19:00:00.000Z"), sessions)) == [
+        date(2024, 11, 29)
+    ]
 
 
 def test_a_friday_evening_release_is_traded_on_monday():
@@ -92,6 +120,15 @@ def test_a_release_after_the_last_session_we_hold_is_not_pinned_to_it():
     # day on a date that had nothing to do with it.
     reacting = reacting_sessions(accepted("2027-01-04T21:00:00.000Z"), SESSIONS_2025)
     assert pd.isna(reacting.iloc[0])
+
+
+def test_a_release_before_the_first_session_we_hold_is_not_pinned_to_it():
+    # The bug this replaces: every filing older than the store landed on
+    # its first session, so 739 of 817 securities showed an earnings day
+    # on the same morning. News we hold no reacting session for is NaT.
+    reacting = reacting_sessions(accepted("2004-11-15T21:00:00.000Z"), SESSIONS_2025)
+    assert pd.isna(reacting.iloc[0])
+    assert earnings_window([date(2004, 11, 15)], SESSIONS_2025) == set()
 
 
 def test_no_announcements_is_not_an_error():
@@ -172,6 +209,97 @@ def test_nothing_filed_means_nothing_is_trusted():
 
 def test_the_staleness_threshold_is_two_reporting_quarters():
     assert STALE_AFTER_SESSIONS == 126
+
+
+# --- macro releases ----------------------------------------------------------
+
+
+def test_a_release_before_the_bell_is_traded_that_session():
+    # CPI and payrolls come out at 08:30 ET.
+    flags = macro_flags(SESSIONS_2025, [(date(2025, 3, 12), "cpi", "08:30")]).set_index("date")
+    assert flags.loc[date(2025, 3, 12), "cpi"]
+    assert not flags.loc[date(2025, 3, 13), "cpi"]
+
+
+def test_an_fomc_decision_lands_on_the_session_it_was_announced_in():
+    flags = macro_flags(SESSIONS_2025, [(date(2025, 3, 19), "fomc", "14:00")]).set_index("date")
+    assert flags.loc[date(2025, 3, 19), "fomc"]
+
+
+def test_a_weekend_announcement_is_traded_on_the_next_session():
+    # The emergency statement of Sunday 15 March 2020 was first traded
+    # on the Monday - the shape a date-only table would get wrong.
+    sessions = sessions_between(date(2020, 3, 1), date(2020, 3, 31))
+    flags = macro_flags(sessions, [(date(2020, 3, 15), "fomc", "17:00")]).set_index("date")
+    assert flags.loc[date(2020, 3, 16), "fomc"]
+    assert date(2020, 3, 15) not in flags.index  # a Sunday is not a session
+
+
+def test_the_three_kinds_stay_in_their_own_columns():
+    flags = macro_flags(
+        SESSIONS_2025,
+        [(date(2025, 3, 12), "cpi", "08:30"), (date(2025, 3, 7), "payrolls", "08:30")],
+    ).set_index("date")
+    assert flags.loc[date(2025, 3, 12), "cpi"] and not flags.loc[date(2025, 3, 12), "payrolls"]
+    assert flags.loc[date(2025, 3, 7), "payrolls"] and not flags.loc[date(2025, 3, 7), "cpi"]
+
+
+def test_a_macro_flag_is_never_unknown():
+    # Unlike a company's earnings, the release calendar is complete:
+    # every one of these is scheduled and published in advance, so a
+    # quiet day is a known-quiet day.
+    flags = macro_flags(SESSIONS_2025, [])
+    for kind in MACRO_FLAGS:
+        assert flags[kind].notna().all()
+        assert not flags[kind].any()
+
+
+def test_an_unrecognised_kind_is_an_error_not_a_dropped_flag():
+    with pytest.raises(ValueError, match="Unknown macro event kind"):
+        macro_flags(SESSIONS_2025, [(date(2025, 3, 12), "gdp", "08:30")])
+
+
+def test_a_release_with_no_time_recorded_is_taken_as_intraday():
+    flags = macro_flags(SESSIONS_2025, [(date(2025, 3, 12), "cpi", "")]).set_index("date")
+    assert flags.loc[date(2025, 3, 12), "cpi"]
+
+
+# --- the committed macro table -----------------------------------------------
+
+
+def test_the_committed_table_covers_the_whole_store_period():
+    events = read_table()
+    years = {e.day.year for e in events}
+    assert years >= set(range(2016, 2026))
+    kinds = Counter(e.kind for e in events)
+    assert set(kinds) == set(MACRO_FLAGS)
+
+
+def test_every_year_has_the_right_number_of_releases():
+    # A page that changes shape returns fewer rows rather than an error,
+    # so the count is the check that matters. 2020 has two extra FOMC
+    # days (the emergency actions of 3 and 23 March); 2025 is short one
+    # CPI and one payrolls (the shutdown).
+    counts = Counter((e.day.year, e.kind) for e in read_table())
+    for year in range(2016, 2025):
+        assert counts[(year, "cpi")] == 12, year
+        assert counts[(year, "payrolls")] == 12, year
+        assert counts[(year, "fomc")] == (10 if year == 2020 else 8), year
+
+
+def test_the_emergency_decisions_of_march_2020_are_in_the_table():
+    fomc = {e.day for e in read_table() if e.kind == "fomc"}
+    for day in (date(2020, 3, 3), date(2020, 3, 15), date(2020, 3, 23)):
+        assert day in fomc, day
+    # ...and the facility announcements of the same month are not.
+    for day in (date(2020, 3, 19), date(2020, 3, 31), date(2020, 8, 27)):
+        assert day not in fomc, day
+
+
+def test_the_bls_releases_are_all_before_the_bell():
+    for event in read_table():
+        if event.kind in ("cpi", "payrolls"):
+            assert event.time_et == "08:30", event
 
 
 # --- option expiry and triple witching ---------------------------------------
@@ -400,7 +528,7 @@ def test_a_security_we_hold_no_filings_for_is_unknown_never_false(store):
     build(root, sessions)
     # FPI files 6-K, not 8-K: we cannot say whether it reported. Saying
     # "no" would quietly leave its earnings days in the validation set.
-    for session in (sessions[0], date(2025, 2, 27), sessions[-1]):
+    for session in (date(2025, 4, 22), date(2025, 2, 27), date(2025, 6, 24)):
         assert pd.isna(stored(root, session).loc["FIGI_FPI", "earnings"]), session
         assert pd.isna(stored(root, session).loc["FIGI_FPI", "any_event"]), session
 
@@ -427,7 +555,7 @@ def test_calendar_flags_apply_to_every_security_that_day(store):
 def test_an_ordinary_day_with_nothing_on_it_is_a_clean_false(store):
     root, sessions = store
     build(root, sessions)
-    row = stored(root, date(2025, 3, 12)).loc["FIGI_FAKEA"]
+    row = stored(root, date(2025, 4, 22)).loc["FIGI_FAKEA"]
     assert row["any_event"] == False  # noqa: E712
     # ...even though two flags on the row are unknown for everyone.
     assert pd.isna(row["halt"]) and pd.isna(row["index_change"])
