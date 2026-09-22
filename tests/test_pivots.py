@@ -197,6 +197,32 @@ def test_the_nearer_of_the_two_pivots_wins():
     assert features["dist_nearest_swing_pivot"].iloc[0] == pytest.approx(13.0 - 11.5)
 
 
+def test_the_pivot_high_is_reported_on_its_own():
+    # Section 7's Family B asks about resistance. The nearer-of-the-two
+    # column says 1.5 here, which is the distance to a pivot *low* -
+    # support, the opposite thing - and nothing in that number says so.
+    days = weekdays(6)
+    daily = daily_from([10.0, 20.0, 12.0, 13.0, 14.0, 15.0], days)
+    pivots = pivots_by_session(daily, flat_atr(6, 1.0))
+    bars = pd.DataFrame({"date": [days[5]], "close": [13.0]})
+    atr = pd.Series(1.0, index=pd.Index(days, name="date"))
+    features = pivot_and_node_features(bars, pivots, pd.Series(dtype=float), atr)
+    assert features["dist_nearest_pivot_high"].iloc[0] == pytest.approx(13.0 - 20.5)
+    assert features["dist_nearest_swing_pivot"].iloc[0] == pytest.approx(13.0 - 11.5)
+
+
+def test_the_pivot_high_is_missing_until_one_is_confirmed():
+    # A rising series has no confirmed high yet: no counter-move has
+    # happened, so there is nothing to be a distance from.
+    days = weekdays(4)
+    daily = daily_from([10.0, 11.0, 12.0, 13.0], days)
+    pivots = pivots_by_session(daily, flat_atr(4, 1.0))
+    bars = pd.DataFrame({"date": [days[3]], "close": [13.0]})
+    atr = pd.Series(1.0, index=pd.Index(days, name="date"))
+    features = pivot_and_node_features(bars, pivots, pd.Series(dtype=float), atr)
+    assert np.isnan(features["dist_nearest_pivot_high"].iloc[0])
+
+
 # --- look-ahead --------------------------------------------------------------
 
 

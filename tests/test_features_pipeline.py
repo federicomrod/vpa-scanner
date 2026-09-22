@@ -125,7 +125,8 @@ def test_every_section_5_feature_is_present(prepared):
     expected = [
         "atr20", "spread_atr", "body_frac", "close_loc", "ret_atr", "efficiency",
         "beta_60", "resid_ret_atr", "dist_high_20", "dist_round_number",
-        "dist_nearest_swing_pivot", "dist_nearest_hvn", "level_touch_count",
+        "dist_nearest_swing_pivot", "dist_nearest_pivot_high", "dist_nearest_hvn",
+        "level_touch_count",
     ]  # fmt: skip
     for column in expected:
         assert column in features.columns, column
