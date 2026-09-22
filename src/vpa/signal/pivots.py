@@ -23,8 +23,12 @@ decision 6):
   force when the counter-move happens**, so the filter scales with the
   stock's own volatility as Section 5.6 intends.
 - `dist_nearest_swing_pivot` is the distance to the nearer of the last
-  confirmed pivot high and pivot low. The pivot high is kept separately
-  as well, because Section 7's Family B names it specifically.
+  confirmed pivot high and pivot low.
+- `dist_nearest_pivot_high` is the distance to the pivot **high** alone.
+  Section 7's Family B tests for resistance, and a pivot low is support,
+  not resistance - the nearer-of-the-two column cannot answer that,
+  because once the two are combined there is no way to tell which one
+  the number refers to (LEDGER-2, amendment 1).
 - The histogram spans the trailing 60 sessions' lowest low to highest
   high in 50 equal bins, fed by hourly bars, each bar's whole volume
   going to the bin holding its close (decision 6). The node is the
@@ -45,7 +49,7 @@ PIVOT_COUNTER_MOVE_ATR = 1.5
 HISTOGRAM_SESSIONS = 60
 HISTOGRAM_BINS = 50
 
-COLUMNS = ["dist_nearest_swing_pivot", "dist_nearest_hvn"]
+COLUMNS = ["dist_nearest_swing_pivot", "dist_nearest_pivot_high", "dist_nearest_hvn"]
 
 
 @dataclass
@@ -166,7 +170,11 @@ def pivot_and_node_features(
     to_low = (close - low_pivot) / usable_atr
     nearer = np.where(_closer(to_high, to_low), to_high, to_low)
     return pd.DataFrame(
-        {"dist_nearest_swing_pivot": nearer, "dist_nearest_hvn": (close - node) / usable_atr},
+        {
+            "dist_nearest_swing_pivot": nearer,
+            "dist_nearest_pivot_high": to_high,
+            "dist_nearest_hvn": (close - node) / usable_atr,
+        },
         index=bars.index,
     )
 

@@ -232,3 +232,41 @@ LEDGER-1.
 - **Too little history gives "unknown", not "did not happen".** A failed
   new high needs ten bars behind it; with fewer, the flag is null rather
   than false.
+
+---
+
+## Amendment 1 (2026-09-22): the swing pivot high, on its own
+
+**Class:** new column in the frozen area (`vpa.signal.pivots`). No
+threshold or rule changes; nothing existing is recomputed differently.
+
+**What was wrong.** This entry's reading 3 says:
+
+> `dist_nearest_swing_pivot` is the distance to the nearer of the last
+> confirmed pivot high and pivot low. **The pivot high is kept separately
+> as well, because Section 7's Family B names it specifically.**
+
+The second sentence was never true of the code. `COLUMNS` held only
+`dist_nearest_swing_pivot` and `dist_nearest_hvn`, so the pivot high was
+computed, combined with the pivot low, and thrown away.
+
+**Why it matters.** Section 7.2's Family B is a *resistance* test - the
+stock pushed up into a level where it previously failed, and was sold
+back. A pivot low is support, the opposite thing. Once the two are
+combined into "the nearer of", nothing in the number says which one it
+refers to, so the distinction cannot be recovered downstream.
+
+LEDGER-3 already recorded the consequence without naming the cause: its
+measured Family B yield used "the nearest swing pivot rather than
+specifically a pivot high, so its count is slightly generous."
+
+**What changed.** `dist_nearest_pivot_high` is now returned alongside
+the existing column, which is unchanged. Features were rebuilt over the
+whole store; the rebuild takes about 21 minutes and is routine, because
+features are regenerable by design.
+
+**Checked:** a case where close sits between a confirmed pivot high and
+a confirmed pivot low, where the old column reports the distance to the
+low and the new one reports the distance to the high; and a rising
+series with no confirmed high yet, where the new column is empty rather
+than borrowing the low.
