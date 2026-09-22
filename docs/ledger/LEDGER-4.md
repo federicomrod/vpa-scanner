@@ -311,3 +311,73 @@ naming the measured numbers. The rebuilt table was checked against the
 store: 2,434,142 rows, the first sessions back to normal, OHI's 16:18 ET
 filing still flagging 5, 6 and 7 February 2025, and 3 March 2020 and 16
 March 2020 both flagged FOMC for every security.
+
+---
+
+## Amendment 2 (2026-09-22): how much the item-2.02 flag misses, measured
+
+**Class:** measurement, plus the code to take it. No flag or threshold
+changes; the decision it informs is still open.
+
+### Why this was taken
+
+Decision 7 marks a security's earnings flag unknown when its item-2.02
+record goes **quiet**. That catches a company which stopped using the
+code. It does not catch a company which uses 2.02 for quarterly results
+and something else for an interim announcement.
+
+**Abercrombie, 13 January 2025** is the case that forced this. The stock
+gapped 15% - previous close 161.09, open 146.96, low 128.30 - on a
+January sales update filed that morning at 07:10 ET, before the bell,
+under **item 7.01**. ANF's 2.02 record is healthy, 119 filings, so the
+staleness guard sees nothing wrong. Section 6 reports **no known event**
+for the day, and Section 7 would admit it to validation as clean.
+
+**A correction to this entry's decision 1**, which claimed "ANF's
+January sales update is one" of the item-2.02 filings. It is not. The
+only January 2.02 on ANF's record in the whole ten years is 2014-01-10.
+The claim was wrong when written.
+
+### What was measured
+
+Every 8-K for all 1,158 securities was downloaded - 268,530 filings,
+reusing the CIKs already resolved, so no vendor key and no vendor
+requests. Then: 8-Ks under item **7.01** (Reg FD) or **8.01** (Other
+Events) with no results filing within a day either side, since companies
+routinely file those alongside their results.
+
+| | |
+|---|---|
+| 8-Ks on record | 268,530 |
+| under 7.01 or 8.01, no results filing near | **88,431** |
+| securities affected | 1,084 of 1,158 |
+| filed before the open | 26,750 (30%) |
+| filed after the close | 41,328 (47%) |
+
+**77% were filed outside market hours** - the shape of a news release
+rather than routine housekeeping.
+
+### What widening the flag would cost
+
+| flag | security-sessions marked (D-1/D0/D+1) |
+|---|---|
+| item 2.02 only, as now | 111,902 (4.6%) |
+| voluntary items only | 111,680 (4.6%) |
+| both | **221,868 (9.1%)** |
+
+So these announcements would flag **as many days again** as the results
+filings do. Widening the earnings flag to include them doubles its
+footprint.
+
+### Not decided here
+
+Three options, none free:
+
+1. **Leave the flag as it is.** ANF-type days stay in validation,
+   unflagged. The size of that is now known rather than guessed.
+2. **Widen `earnings` to 7.01 and 8.01.** Doubles the excluded days and
+   calls a buyback announcement "earnings", which is not true.
+3. **Add a separate `company_announcement` flag.** Keeps the two
+   distinct, lets Section 7's mask include it or not, and makes the
+   choice measurable either way. This is the recommendation on the
+   record; the project owner decides.
