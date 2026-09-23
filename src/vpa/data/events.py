@@ -18,6 +18,9 @@ facts they need and writes the answers out.
 - **index_change**, **halt** - no historical source exists; recorded as
   unknown for everyone, on every day (LEDGER-4).
 - **the calendar flags** - derived from the sessions themselves.
+- **company_announcement** - an 8-K under item 7.01 or 8.01 with no
+  results filing near it. Shown to the trader, never used to exclude a
+  day from validation (LEDGER-4, amendment 3).
 - **fomc**, **cpi**, **payrolls** - `reference/macro-events.csv`, the
   checked table `vpa.data.macro` builds from the Federal Reserve and the
   BLS and commits to the repository. Nothing here touches the network.
@@ -59,13 +62,14 @@ from pathlib import Path
 import pandas as pd
 
 from vpa.data.bars import DAILY, derived_path
-from vpa.data.edgar import CIK_DATASET, FILINGS_DATASET
+from vpa.data.edgar import CIK_DATASET, EIGHT_K_DATASET, FILINGS_DATASET, missed_announcements
 from vpa.data.ingest import setup_logging
 from vpa.data.macro import read_table
 from vpa.data.raw_store import DEFAULT_DATA_ROOT, read_partition
 from vpa.signal.events import (
     ALL_FLAGS,
     CALENDAR_FLAGS,
+    INFORMATIONAL_FLAGS,
     MACRO_FLAGS,
     STALE_AFTER_SESSIONS,
     UNAVAILABLE_FLAGS,
@@ -134,6 +138,35 @@ def dated_events(table: pd.DataFrame, column: str) -> dict[str, set[date]]:
     return dict(by_ticker)
 
 
+def announcements_by_security(
+    data_root: Path, sessions: list[date], half_days: set[date] | None = None
+) -> dict[str, set[date]]:
+    """Sessions that traded on an 8-K our earnings flag says nothing
+    about - item 7.01 or 8.01, with no results filing near it.
+
+    Marked and shown, never used to exclude a day from validation
+    (LEDGER-4, amendment 3). The session it lands on is decided by the
+    same close-time rule as everything else; unlike earnings there is no
+    D-1, because nobody anticipates an unscheduled filing.
+    """
+    folder = data_root / "raw" / EIGHT_K_DATASET
+    if not folder.exists():
+        log.warning(
+            "No %s stored: the company_announcement flag will be empty. "
+            "Run `python -m vpa.data.edgar --all-items` to fill it.",
+            EIGHT_K_DATASET,
+        )
+        return {}
+    filings = missed_announcements(data_root)
+    if filings.empty:
+        return {}
+    reacting = reacting_sessions(filings["accepted_utc"], sessions, half_days)
+    return {
+        key: {day for day in group if not pd.isna(day)}
+        for key, group in reacting.groupby(filings["security_key"])
+    }
+
+
 def earnings_by_security(
     filings: pd.DataFrame, sessions: list[date], half_days: set[date] | None = None
 ) -> tuple[dict[str, set[date]], dict[str, set[date]]]:
@@ -180,11 +213,13 @@ def build(data_root: Path, sessions: list[date], rebuild: bool = False) -> int:
 
     half_days = half_days_in(data_root, sessions)
     earnings, trusted = earnings_by_security(filings, sessions, half_days)
+    announcements = announcements_by_security(data_root, sessions, half_days)
     ex_dividends = dated_events(load_dataset(data_root, "dividends"), "ex_dividend_date")
     splits = dated_events(load_dataset(data_root, "splits"), "execution_date")
     log.info(
-        "Earnings dates available for %d securities; ex-dividends for %d tickers, splits for %d",
-        len(trusted), len(ex_dividends), len(splits),
+        "Earnings dates available for %d securities; ex-dividends for %d tickers, splits for %d; "
+        "other announcements for %d",
+        len(trusted), len(ex_dividends), len(splits), len(announcements),
     )  # fmt: skip
 
     calendar = calendar_flags(sessions, half_days).set_index("date")
@@ -199,8 +234,9 @@ def build(data_root: Path, sessions: list[date], rebuild: bool = False) -> int:
     written = 0
     for n, session in enumerate(todo, 1):
         table = session_rows(
-            data_root, session, calendar.loc[session], earnings, trusted, ex_dividends, splits
-        )
+            data_root, session, calendar.loc[session], earnings, trusted, ex_dividends, splits,
+            announcements,
+        )  # fmt: skip
         path = events_path(data_root, session)
         path.parent.mkdir(parents=True, exist_ok=True)
         table.to_parquet(path, index=False)
@@ -233,6 +269,7 @@ def session_rows(
     trusted: dict[str, set[date]],
     ex_dividends: dict[str, set[date]],
     splits: dict[str, set[date]],
+    announcements: dict[str, set[date]] | None = None,
 ) -> pd.DataFrame:
     """The event rows for one session."""
     securities = session_securities(data_root, session)
@@ -256,6 +293,11 @@ def session_rows(
     rows["split"] = pd.array(
         [session in splits.get(t, ()) for t in rows["requested_ticker"]], dtype="boolean"
     )
+    for flag in INFORMATIONAL_FLAGS:
+        rows[flag] = pd.array(
+            [session in (announcements or {}).get(key, ()) for key in rows["security_key"]],
+            dtype="boolean",
+        )
     for flag in UNAVAILABLE_FLAGS:
         rows[flag] = pd.array([pd.NA] * len(rows), dtype="boolean")
     for flag in [*CALENDAR_FLAGS, *MACRO_FLAGS]:

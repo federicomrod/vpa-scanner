@@ -87,10 +87,27 @@ MACRO_FLAGS = ["fomc", "cpi", "payrolls"]
 #: recorded as always-unknown columns and excluded from `any_event`.
 UNAVAILABLE_FLAGS = ["index_change", "halt"]
 
-ALL_FLAGS = [*COMPANY_FLAGS, *CALENDAR_FLAGS, *MACRO_FLAGS]
+#: Flags that are **recorded and shown, but never used to exclude a day
+#: from validation** (LEDGER-4, amendment 3).
+#:
+#: `company_announcement` marks an 8-K filed under item 7.01 or 8.01 with
+#: no results filing near it. Measured over the whole store, those days
+#: move 0.47 ATR against an ordinary day's 0.40, on 12% more volume - an
+#: earnings day moves 1.23 ATR on 161% more. They are overwhelmingly
+#: routine, and excluding them would cost 4.6% of every validation set to
+#: catch a small minority that matter. So the morning report can say "an
+#: 8-K was filed at 07:10" while validation carries on.
+INFORMATIONAL_FLAGS = ["company_announcement"]
 
-#: The flags `any_event` is computed from: everything with a source.
-OBSERVABLE_FLAGS = [flag for flag in ALL_FLAGS if flag not in UNAVAILABLE_FLAGS]
+ALL_FLAGS = [*COMPANY_FLAGS, *CALENDAR_FLAGS, *MACRO_FLAGS, *INFORMATIONAL_FLAGS]
+
+#: The flags `any_event` is computed from: those with a source, and that
+#: Section 7 item 6 is meant to exclude on. The two exceptions are there
+#: for opposite reasons - one has no source, the other has a source and
+#: is deliberately not grounds for exclusion.
+OBSERVABLE_FLAGS = [
+    flag for flag in ALL_FLAGS if flag not in UNAVAILABLE_FLAGS and flag not in INFORMATIONAL_FLAGS
+]
 
 #: Session close times come from Section 4's definition of a session, so
 #: there is one place that says when trading stops.

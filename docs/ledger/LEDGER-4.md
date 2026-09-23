@@ -459,6 +459,28 @@ buyback notices.
 validation treats as clean, and under this recommendation it still
 would. That is a known, measured cost, not an oversight.
 
+### Decided and built (project owner, 2026-09-23)
+
+The recommendation was accepted: a separate `company_announcement` flag,
+**recorded and shown, never grounds for excluding a day from
+validation**. `OBSERVABLE_FLAGS` therefore excludes it, alongside the
+two flags that have no source - the same exclusion for opposite reasons,
+and both named in the code so neither reads as an oversight.
+
+**The window is the reacting session only**, not D-1/D0/D+1 as earnings
+uses. D-1 exists for earnings because a scheduled report is anticipated
+and positioned for; nobody positions ahead of an unscheduled 8-K.
+
+Measured on the rebuilt table, 98,105 sampled security-days: the flag is
+true on **1.6%** of them, and **81% of those days still read `any_event`
+false**, which is the whole point - they stay in validation.
+
+ANF's 13 January 2025 now reads `company_announcement: true` with
+`any_event: false`. The trader would see "an 8-K was filed that
+morning"; validation still treats the day as usable. The owner accepted
+that explicitly: the aggregate evidence decides this, not one familiar
+example.
+
 ### A caution on the obvious shortcut
 
 Selecting these announcements *by how much the stock moved* and flagging

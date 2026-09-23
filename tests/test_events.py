@@ -28,6 +28,7 @@ from vpa.signal.events import (
     ALL_FLAGS,
     CALENDAR_FLAGS,
     EARNINGS_WINDOW,
+    INFORMATIONAL_FLAGS,
     MACRO_FLAGS,
     OBSERVABLE_FLAGS,
     STALE_AFTER_SESSIONS,
@@ -581,6 +582,73 @@ def test_rows_are_written_for_the_securities_that_traded_that_day(store):
     root, sessions = store
     build(root, sessions)
     assert set(stored(root, sessions[0]).index) == {"FIGI_FAKEA", "FIGI_FPI"}
+
+
+# --- the informational announcement flag --------------------------------------
+
+
+def test_an_announcement_under_another_item_code_is_flagged(store):
+    root, sessions = store
+    store_raw(
+        root,
+        "eight_k_filings",
+        pd.DataFrame(
+            {
+                "security_key": ["FIGI_FAKEA", "FIGI_FAKEA"],
+                "ticker": ["FAKEA", "FAKEA"],
+                "cik": [1018, 1018],
+                "accession_number": ["0000-10", "0000-11"],
+                "filing_date": [date(2025, 4, 22), date(2025, 2, 27)],
+                # 07:10 ET, before the open: that session reacts.
+                "accepted_utc": ["2025-04-22T11:10:00.000Z", "2025-02-27T21:17:00.000Z"],
+                "items": ["7.01,9.01", "2.02"],
+            }
+        ),
+    )
+    build(root, sessions, rebuild=True)
+    row = stored(root, date(2025, 4, 22)).loc["FIGI_FAKEA"]
+    assert row["company_announcement"]
+    # ...and the results filing is not double-counted as one of these.
+    assert not stored(root, date(2025, 2, 28)).loc["FIGI_FAKEA", "company_announcement"]
+
+
+def test_the_announcement_flag_never_excludes_a_day_from_validation(store):
+    # The whole point of it being informational: these days are shown to
+    # the trader and kept in validation (LEDGER-4, amendment 3).
+    root, sessions = store
+    store_raw(
+        root,
+        "eight_k_filings",
+        pd.DataFrame(
+            {
+                "security_key": ["FIGI_FAKEA"],
+                "ticker": ["FAKEA"],
+                "cik": [1018],
+                "accession_number": ["0000-10"],
+                "filing_date": [date(2025, 4, 22)],
+                "accepted_utc": ["2025-04-22T11:10:00.000Z"],
+                "items": ["7.01,9.01"],
+            }
+        ),
+    )
+    build(root, sessions, rebuild=True)
+    row = stored(root, date(2025, 4, 22)).loc["FIGI_FAKEA"]
+    assert row["company_announcement"]
+    assert row["any_event"] == False  # noqa: E712
+
+
+def test_the_informational_flag_is_kept_out_of_any_event():
+    assert INFORMATIONAL_FLAGS == ["company_announcement"]
+    assert "company_announcement" in ALL_FLAGS
+    assert "company_announcement" not in OBSERVABLE_FLAGS
+    combined = any_event(frame(earnings=[False], half_day=[False], company_announcement=[True]))
+    assert combined.iloc[0] == False  # noqa: E712
+
+
+def test_with_no_eight_k_data_the_flag_is_simply_false(store):
+    root, sessions = store
+    build(root, sessions, rebuild=True)
+    assert not stored(root, sessions[0])["company_announcement"].any()
 
 
 # --- coverage reporting -------------------------------------------------------
