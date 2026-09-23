@@ -15,7 +15,16 @@ import pytest
 from vpa.data.bars import DAILY, HOURLY, derived_path
 from vpa.data.calendar import sessions_between
 from vpa.data.charts import REQUIRED, chart_svg
-from vpa.data.labels import PAGE, append_label, history_for, read_labels
+from vpa.data.labels import (
+    DONE,
+    PAGE,
+    already_seen,
+    append_label,
+    daily_history,
+    history_for,
+    plan_session,
+    read_labels,
+)
 
 SESSIONS = sessions_between(date(2025, 3, 3), date(2025, 3, 21))
 SLOTS = 7
@@ -154,6 +163,84 @@ def test_only_the_charted_security_is_read(tmp_path):
     assert set(found["security_key"]) == {"FIGI_A"}
 
 
+# --- never the same chart twice ----------------------------------------------
+
+
+def test_a_labelled_bar_is_not_offered_again(tmp_path):
+    # Section 12 shows a chart twice only as a deliberate test-retest,
+    # after 28 days. An accidental repeat would look like agreement with
+    # himself and inflate the consistency this is meant to measure.
+    labels = [record(security_key="FIGI_A", date="2025-03-10", slot_index=3)]
+    assert already_seen(labels) == {("FIGI_A", "2025-03-10", 3)}
+
+
+def test_seen_bars_are_matched_however_the_date_was_stored(tmp_path):
+    # Labels round-trip through JSON, so the date comes back as a string
+    # while the bar frame holds a date object.
+    labels = [record(date=str(date(2025, 3, 10)))]
+    assert ("FIGI_A", "2025-03-10", 3) in already_seen(labels)
+
+
+def test_two_sessions_in_one_day_draw_different_charts(tmp_path, monkeypatch):
+    # The bug this replaces: the seed was the date, so a second session
+    # on the same day handed back the same ten charts.
+    import vpa.data.labels as module
+
+    pool = pd.DataFrame(
+        [
+            {
+                "security_key": f"FIGI_{n:03d}",
+                "requested_ticker": f"T{n}",
+                "date": date(2025, 3, 10),
+                "slot_index": n % 7,
+                "is_candidate": n < 20,
+            }
+            for n in range(400)
+        ]
+    )
+    # plan_session skips the first 120 sessions as feature warm-up.
+    many = sessions_between(date(2024, 1, 2), date(2025, 3, 10))
+    assert len(many) > 130
+    monkeypatch.setattr(module, "stored_sessions", lambda root: many)
+    monkeypatch.setattr(module, "eligible_bars", lambda root, session: pool)
+    first = plan_session(tmp_path, seed="2025-09-24-0", count=10)
+    second = plan_session(tmp_path, seed="2025-09-24-10", count=10)
+    assert list(first["security_key"]) != list(second["security_key"])
+
+
+# --- the daily panel ----------------------------------------------------------
+
+
+def test_the_daily_panel_ends_with_a_partial_bar(tmp_path):
+    # The stored daily bar covers the whole session, so mid-session it
+    # contains hours that have not happened yet. The last bar must be
+    # built from the hours up to the one being judged.
+    write_bars(tmp_path, SESSIONS)
+    found = daily_history(tmp_path, "FIGI_A", SESSIONS[5], slot=2)
+    last = found.iloc[-1]
+    assert last["date"] == SESSIONS[5]
+    # Slots 0-2 only: the high cannot include slots 3-6, which are higher.
+    assert last["high"] < 100.6 + 5 + 3 * 0.1
+
+
+def test_the_daily_panel_gives_weeks_of_context_not_days(tmp_path):
+    write_bars(tmp_path, SESSIONS)
+    found = daily_history(tmp_path, "FIGI_A", SESSIONS[-1], slot=6)
+    assert len(found) == len(SESSIONS)  # every earlier session, plus today
+
+
+def test_the_daily_panel_reads_no_later_session(tmp_path):
+    write_bars(tmp_path, SESSIONS)
+    found = daily_history(tmp_path, "FIGI_A", SESSIONS[5], slot=3)
+    assert found["date"].max() == SESSIONS[5]
+
+
+def test_the_daily_panel_shows_only_the_charted_security(tmp_path):
+    write_bars(tmp_path, SESSIONS, keys=("FIGI_A", "FIGI_B"))
+    found = daily_history(tmp_path, "FIGI_A", SESSIONS[5], slot=3)
+    assert set(found["security_key"]) == {"FIGI_A"}
+
+
 # --- keeping the trader blind -------------------------------------------------
 
 
@@ -161,14 +248,22 @@ def test_the_page_cannot_say_which_stratum_a_chart_came_from():
     # Section 12: the trader is never told. If the stratum reached the
     # page, "view source" would answer it and the labels would stop
     # being blind.
-    page = PAGE.format(chart="<svg/>", position=1, total=10, stored=0)
+    page = PAGE.format(chart="<svg/>", daily="<svg/>", position=1, total=10, stored=0)
     assert "stratum" not in page
     assert "candidate" not in page.lower()
     assert "weight" not in page
 
 
+def test_the_finish_page_counts_labels_and_sessions_separately():
+    # The confusion this replaces: "29 sessions to reach 300" read as
+    # though 29 labels remained.
+    page = DONE.format(labelled=10, to_go=290, remaining=29, target=300)
+    assert "290 more labels" in page
+    assert "29 more sessions" in page
+
+
 def test_the_page_offers_both_answers_and_two_optional_fields():
-    page = PAGE.format(chart="<svg/>", position=1, total=10, stored=0)
+    page = PAGE.format(chart="<svg/>", daily="<svg/>", position=1, total=10, stored=0)
     assert 'value="interesting"' in page and 'value="not_interesting"' in page
     assert 'name="note"' in page and 'name="pattern_guess"' in page
 

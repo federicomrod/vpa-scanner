@@ -46,7 +46,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 
-from vpa.data.bars import HOURLY, derived_path
+from vpa.data.bars import DAILY, HOURLY, derived_path
 from vpa.data.charts import chart_svg
 from vpa.data.events import stored_sessions
 from vpa.data.raw_store import DEFAULT_DATA_ROOT
@@ -123,8 +123,98 @@ def history_for(data_root: Path, key: str, session: date, slot: int) -> pd.DataF
     return bars.tail(HISTORY_BARS).reset_index(drop=True)
 
 
-def plan_session(data_root: Path, seed: str, count: int, sample_sessions: int = 40) -> pd.DataFrame:
-    """The charts for one labelling session."""
+def already_seen(labels: list[dict]) -> set[tuple[str, str, int]]:
+    """Every bar that has been labelled already.
+
+    Section 12 shows a chart twice only as a deliberate test-retest,
+    after at least 28 days. An accidental repeat is not that: it is a
+    duplicate that would look like agreement with himself and quietly
+    inflate the consistency this is meant to measure.
+    """
+    return {
+        (label["security_key"], str(label["date"]), int(label["slot_index"])) for label in labels
+    }
+
+
+def daily_history(data_root: Path, key: str, session: date, slot: int, count: int = 60):
+    """Daily bars behind the chart, ending with a **partial** bar.
+
+    A trader reading a chart infers support and resistance from where
+    price has turned before, and sixty hourly bars is eight days -
+    nowhere near enough to see a level that formed weeks ago. Section
+    8.1 gives the AI "the preceding 60 daily bars"; the human judging
+    the same bar should not be given less.
+
+    **The current session's stored daily bar cannot be used.** It covers
+    the whole day, so mid-session it contains hours that have not
+    happened yet - the plainest kind of look-ahead. The last bar here is
+    therefore built from the hourly bars up to and including the one
+    being judged, and no further.
+    """
+    sessions = stored_sessions(data_root)
+    if session not in sessions:
+        raise ValueError(f"{session} is not a stored session")
+    at = sessions.index(session)
+    window = sessions[max(0, at - count) : at]
+
+    frames = []
+    for day in window:
+        path = derived_path(data_root, DAILY, day)
+        if not path.exists():
+            continue
+        rows = pd.read_parquet(
+            path,
+            columns=["security_key", "date", "open", "high", "low", "close", "volume"],
+        )
+        frames.append(rows[rows["security_key"] == key])
+
+    partial = _partial_day(data_root, key, session, slot)
+    if partial is not None:
+        frames.append(partial)
+    if not frames:
+        return pd.DataFrame()
+    bars = pd.concat(frames, ignore_index=True).sort_values("date")
+    return bars.assign(slot_index=0).reset_index(drop=True)
+
+
+def _partial_day(data_root: Path, key: str, session: date, slot: int):
+    """The session so far, as one bar: open to the judged bar's close."""
+    path = derived_path(data_root, HOURLY, session)
+    if not path.exists():
+        return None
+    rows = pd.read_parquet(
+        path,
+        columns=["security_key", "date", "slot_index", "open", "high", "low", "close", "volume"],
+    )
+    so_far = rows[(rows["security_key"] == key) & (rows["slot_index"] <= slot)].sort_values(
+        "slot_index"
+    )
+    if so_far.empty:
+        return None
+    return pd.DataFrame(
+        [
+            {
+                "security_key": key,
+                "date": session,
+                "open": float(so_far.iloc[0]["open"]),
+                "high": float(so_far["high"].max()),
+                "low": float(so_far["low"].min()),
+                "close": float(so_far.iloc[-1]["close"]),
+                "volume": float(so_far["volume"].sum()),
+            }
+        ]
+    )
+
+
+def plan_session(
+    data_root: Path,
+    seed: str,
+    count: int,
+    sample_sessions: int = 40,
+    seen: set[tuple[str, str, int]] | None = None,
+) -> pd.DataFrame:
+    """The charts for one labelling session, excluding anything already
+    labelled."""
     sessions = stored_sessions(data_root)
     usable = sessions[120:]
     picked = usable[:: max(1, len(usable) // sample_sessions)][-sample_sessions:]
@@ -132,7 +222,18 @@ def plan_session(data_root: Path, seed: str, count: int, sample_sessions: int = 
     frames = [f for f in frames if not f.empty]
     if not frames:
         raise FileNotFoundError("No features stored; nothing to label.")
-    return draw(split(pd.concat(frames, ignore_index=True)), count, seed)
+    pool = pd.concat(frames, ignore_index=True)
+    if seen:
+        keep = [
+            (key, str(day), int(slot)) not in seen
+            for key, day, slot in zip(
+                pool["security_key"], pool["date"], pool["slot_index"], strict=True
+            )
+        ]
+        pool = pool[keep]
+    if pool.empty:
+        raise FileNotFoundError("Every eligible bar has been labelled already.")
+    return draw(split(pool), count, seed)
 
 
 # --- the label file -----------------------------------------------------------
@@ -178,6 +279,8 @@ PAGE = """<!doctype html><meta charset="utf-8">
 </header>
 <main>
  <div class="chart">{chart}</div>
+ <p class="muted" style="margin:10px 0 4px">Daily, same stock, same moment</p>
+ <div class="chart">{daily}</div>
  <form method="post" action="/answer">
   <div class="row">
    <button class="yes" name="response" value="interesting">Interesting</button>
@@ -203,8 +306,8 @@ DONE = """<!doctype html><meta charset="utf-8">
 <title>Session complete</title>
 <body style="font:16px system-ui;text-align:center;padding:60px">
 <h2>Session complete</h2>
-<p>{labelled} labels stored in total.</p>
-<p>{remaining} sessions to reach {target}.</p>
+<p><strong>{labelled}</strong> labels stored in total.</p>
+<p>{to_go} more labels to reach {target} &mdash; about {remaining} more sessions of ten.</p>
 <p style="color:#6b6b6b">Remember to unmount the volume:<br>
 <code>hdiutil detach /Volumes/VPALabels</code></p>"""
 
@@ -225,6 +328,7 @@ class Reviewer(BaseHTTPRequestHandler):
                 200,
                 DONE.format(
                     labelled=labelled,
+                    to_go=max(TARGET_LABELS - labelled, 0),
                     remaining=sessions_to_target(labelled),
                     target=TARGET_LABELS,
                 ),
@@ -234,6 +338,7 @@ class Reviewer(BaseHTTPRequestHandler):
             200,
             PAGE.format(
                 chart=chart["svg"],
+                daily=chart["daily_svg"],
                 position=Reviewer.position + 1,
                 total=len(Reviewer.charts),
                 stored=Reviewer.already + Reviewer.position,
@@ -293,7 +398,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--count", type=int, default=CHARTS_PER_SESSION)
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--seed", default=date.today().isoformat())
+    parser.add_argument(
+        "--seed",
+        help="Overrides the automatic one. Normally leave this alone: the "
+        "automatic seed changes with every session, so running twice in one "
+        "day draws different charts.",
+    )
     args = parser.parse_args(argv)
 
     if not args.labels_dir.parent.exists():
@@ -301,19 +411,26 @@ def main(argv: list[str] | None = None) -> int:
         print("  hdiutil attach ~/vpa-labels.sparsebundle")
         return 1
 
-    already = len(read_labels(args.labels_dir))
-    print(f"{already} labels stored. Target {TARGET_LABELS}; "
-          f"{sessions_to_target(already)} sessions to go.")  # fmt: skip
+    stored = read_labels(args.labels_dir)
+    already = len(stored)
+    print(f"{already} labels stored. {max(TARGET_LABELS - already, 0)} to go "
+          f"({sessions_to_target(already)} more sessions of {args.count}).")  # fmt: skip
 
-    planned = plan_session(args.data_root, args.seed, args.count)
+    # The seed moves with the number of labels already stored, so a
+    # second session on the same day is a different draw. Without this,
+    # the date alone would hand back the same ten charts.
+    seed = args.seed or f"{date.today().isoformat()}-{already}"
+    planned = plan_session(args.data_root, seed, args.count, seen=already_seen(stored))
     charts = []
     for row in planned.itertuples(index=False):
         bars = history_for(args.data_root, row.security_key, row.date, int(row.slot_index))
         if bars.empty:
             continue
+        wider = daily_history(args.data_root, row.security_key, row.date, int(row.slot_index))
         charts.append(
             {
-                "svg": chart_svg(bars),
+                "svg": chart_svg(bars, "hourly"),
+                "daily_svg": chart_svg(wider, "daily") if not wider.empty else "",
                 "security_key": row.security_key,
                 "date": row.date,
                 "slot_index": row.slot_index,
