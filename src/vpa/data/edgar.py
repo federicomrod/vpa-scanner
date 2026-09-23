@@ -53,7 +53,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -75,6 +75,12 @@ REQUESTS_PER_SECOND = 8.0
 
 CIK_DATASET = "security_cik"
 FILINGS_DATASET = "earnings_filings"
+EIGHT_K_DATASET = "eight_k_filings"
+
+#: Items that carry news a company chose to put out, as opposed to a
+#: required disclosure. 7.01 is Reg FD, 8.01 is "Other Events" - the two
+#: a results release turns up under when it is not filed as 2.02.
+VOLUNTARY_ITEMS = ("7.01", "8.01")
 
 #: A company reporting quarterly should show roughly four a year. Fewer
 #: than this over its listed life means the mapping or the coverage
@@ -95,19 +101,30 @@ def earnings_filings(submissions: dict) -> list[dict]:
     `submissions` is the parsed JSON; only the block it carries is read,
     so additional pages are fetched by the caller and passed separately.
     """
+    return [f for f in eight_k_filings(submissions) if EARNINGS_ITEM in f["items"].split(",")]
+
+
+def eight_k_filings(submissions: dict) -> list[dict]:
+    """**Every** 8-K, whatever it reports.
+
+    Item 2.02 is the designated code for results, but companies are not
+    obliged to use it. Abercrombie filed its January 2025 sales update -
+    the one the stock gapped 15% on - under item 7.01 at 07:10 ET, and
+    our earnings flag read false for that day. Keeping every 8-K lets the
+    size of that hole be measured instead of guessed (LEDGER-4).
+    """
     filings = submissions.get("filings", {}).get("recent", submissions)
     forms = filings.get("form") or []
     rows = []
     for position, form in enumerate(forms):
-        items = filings.get("items", [])[position] or ""
-        if form != "8-K" or EARNINGS_ITEM not in items.split(","):
+        if form != "8-K":
             continue
         rows.append(
             {
                 "accession_number": filings["accessionNumber"][position],
                 "filing_date": date.fromisoformat(filings["filingDate"][position]),
                 "accepted_utc": filings["acceptanceDateTime"][position],
-                "items": items,
+                "items": filings.get("items", [])[position] or "",
             }
         )
     return rows
@@ -174,8 +191,14 @@ def download(
     run_id: str,
     opener: Callable | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    extract: Callable[[dict], list[dict]] = earnings_filings,
+    dataset: str = FILINGS_DATASET,
 ) -> pd.DataFrame:
-    """Every results announcement for each security, from EDGAR."""
+    """Every filing of interest for each security, from EDGAR.
+
+    `extract` decides what counts: `earnings_filings` for item 2.02 only,
+    `eight_k_filings` for every 8-K.
+    """
     with_cik = securities.dropna(subset=["cik"])
     log.info("Fetching filings for %d securities with a CIK", len(with_cik))
     rows, thin = [], []
@@ -191,16 +214,17 @@ def download(
             log.warning("EDGAR has no submissions for %s (CIK %d)", security.ticker, cik)
             sleep(interval)
             continue
-        found = earnings_filings(submissions)
+        found = extract(submissions)
         for page in additional_pages(submissions):
             sleep(interval)
-            found += earnings_filings(
+            found += extract(
                 fetch_json(f"https://data.sec.gov/submissions/{page}", contact, opener)
             )
         for filing in found:
             rows.append({"security_key": security.security_key, "ticker": security.ticker,
                          "cik": cik, **filing})  # fmt: skip
-        _note_if_thin(found, security, thin)
+        if dataset == FILINGS_DATASET:
+            _note_if_thin(found, security, thin)
         if n % 100 == 0:
             log.info("  %d of %d securities, %d filings so far", n, len(with_cik), len(rows))
         sleep(interval)
@@ -217,10 +241,10 @@ def download(
             len(thin), EXPECTED_PER_YEAR, ", ".join(t for t in thin[:10]),
         )  # fmt: skip
     write_part(
-        data_root, FILINGS_DATASET, f"fetched={datetime.now(UTC).date()}", run_id, filings,
-        {"dataset": FILINGS_DATASET, "securities": len(with_cik), "item": EARNINGS_ITEM},
+        data_root, dataset, f"fetched={datetime.now(UTC).date()}", run_id, filings,
+        {"dataset": dataset, "securities": len(with_cik)},
     )  # fmt: skip
-    log.info("Stored %d results announcements for %d securities", len(filings), len(with_cik))
+    log.info("Stored %d filings for %d securities in %s", len(filings), len(with_cik), dataset)
     return filings
 
 
@@ -253,11 +277,95 @@ def universe_securities(data_root: Path) -> pd.DataFrame:
     return latest.rename(columns={"as_of_session": "as_of"})[["security_key", "ticker", "as_of"]]
 
 
+def stored_ciks(data_root: Path) -> pd.DataFrame:
+    """The CIKs resolved by an earlier run.
+
+    Reusing them means a second download needs nothing but EDGAR - no
+    vendor key, no vendor requests.
+    """
+    stored = read_partition(data_root, CIK_DATASET, "all")
+    if stored.empty:
+        raise FileNotFoundError(
+            f"No CIKs stored in {data_root}. Run this without --all-items first, "
+            "which resolves them from the vendor's point-in-time ticker details."
+        )
+    return stored
+
+
+def missed_announcements(data_root: Path) -> pd.DataFrame:
+    """8-Ks filed under a voluntary item that no results filing covers.
+
+    An upper bound on what the earnings flag misses, not a count of
+    missed earnings: items 7.01 and 8.01 also carry buybacks, dividend
+    declarations and conference appearances. What the count does say is
+    how much company news the flag is silent about (LEDGER-4).
+    """
+    every = read_dataset(data_root, EIGHT_K_DATASET)
+    if every.empty:
+        raise FileNotFoundError(
+            f"No {EIGHT_K_DATASET} stored in {data_root}. Run with --all-items first."
+        )
+    every["day"] = pd.to_datetime(every["filing_date"]).dt.date
+    voluntary = every[
+        every["items"].apply(lambda i: any(v in str(i).split(",") for v in VOLUNTARY_ITEMS))
+    ].copy()
+    results = every[every["items"].apply(lambda i: EARNINGS_ITEM in str(i).split(","))]
+    covered = {(k, d) for k, d in zip(results["security_key"], results["day"], strict=True)}
+    # A results release and its 8-K exhibits sometimes land a day apart,
+    # so a filing touching either neighbouring day counts as covered.
+    near = voluntary.apply(
+        lambda row: any(
+            (row["security_key"], row["day"] + timedelta(days=offset)) in covered
+            for offset in (-1, 0, 1)
+        ),
+        axis=1,
+    )
+    return voluntary[~near] if len(voluntary) else voluntary
+
+
+def read_dataset(data_root: Path, dataset: str) -> pd.DataFrame:
+    folder = data_root / "raw" / dataset
+    if not folder.exists():
+        return pd.DataFrame()
+    parts = [read_partition(data_root, dataset, p.name) for p in sorted(folder.iterdir())]
+    parts = [p for p in parts if not p.empty]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+
+
+def report_item_codes(data_root: Path) -> None:
+    """How much company news the item-2.02 flag is silent about."""
+    every = read_dataset(data_root, EIGHT_K_DATASET)
+    missed = missed_announcements(data_root)
+    eastern = pd.to_datetime(missed["accepted_utc"], utc=True, format="mixed").dt.tz_convert(
+        "America/New_York"
+    )
+    before_open = (eastern.dt.time < pd.Timestamp("09:30").time()).sum()
+    after_close = (eastern.dt.time >= pd.Timestamp("16:00").time()).sum()
+
+    log.info("=" * 70)
+    log.info("WHAT THE ITEM-2.02 EARNINGS FLAG IS SILENT ABOUT")
+    log.info("  8-Ks on record:                    %s", f"{len(every):,}")
+    log.info("  under item 7.01 or 8.01, with no")
+    log.info("  results filing within a day:       %s", f"{len(missed):,}")
+    log.info("  ...across securities:              %d", missed["security_key"].nunique())
+    log.info("")
+    log.info("  Of those, filed outside market hours - the shape of a")
+    log.info("  news release rather than routine housekeeping:")
+    log.info("    before the open:  %s (%.0f%%)", f"{before_open:,}",
+             100 * before_open / max(len(missed), 1))  # fmt: skip
+    log.info("    after the close:  %s (%.0f%%)", f"{after_close:,}",
+             100 * after_close / max(len(missed), 1))  # fmt: skip
+    log.info("")
+    log.info("  This is an upper bound on missed announcements, not a count")
+    log.info("  of missed earnings: these items also carry buybacks, dividend")
+    log.info("  declarations and conference appearances.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m vpa.data.edgar",
-        description="Download earnings announcement dates from SEC EDGAR (8-K item 2.02) "
-        "for every universe member.",
+        description="Download filing dates from SEC EDGAR for every universe member: "
+        "results announcements (8-K item 2.02) by default, or every 8-K with --all-items.",
     )
     parser.add_argument(
         "--contact",
@@ -267,11 +375,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--secrets-file", type=Path, default=DEFAULT_SECRETS_FILE)
+    parser.add_argument(
+        "--all-items",
+        action="store_true",
+        help="Store every 8-K, not only results announcements, reusing the CIKs already "
+        "resolved. Needs no vendor key.",
+    )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Report how much company news the item-2.02 flag is silent about, and stop",
+    )
     args = parser.parse_args(argv)
 
     setup_logging(args.data_root, "edgar")
     try:
+        if args.report:
+            report_item_codes(args.data_root)
+            return 0
         run_id = new_run_id()
+        if args.all_items:
+            with_cik = stored_ciks(args.data_root)
+            log.info("Reusing %d stored CIKs; no vendor requests needed", len(with_cik))
+            download(args.data_root, with_cik, args.contact, run_id,
+                     extract=eight_k_filings, dataset=EIGHT_K_DATASET)  # fmt: skip
+            return 0
         securities = universe_securities(args.data_root)
         log.info("Universe members ever selected: %d", len(securities))
         client = make_client(args.secrets_file, REQUESTS_PER_SECOND)

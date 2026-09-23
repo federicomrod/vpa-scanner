@@ -15,15 +15,19 @@ from tests.fakes import FakeMassiveApi
 from vpa.data.edgar import (
     CIK_DATASET,
     EARNINGS_ITEM,
+    EIGHT_K_DATASET,
     FILINGS_DATASET,
     additional_pages,
     download,
     earnings_filings,
+    eight_k_filings,
+    missed_announcements,
     resolve_ciks,
+    stored_ciks,
     universe_securities,
 )
 from vpa.data.massive import MassiveClient
-from vpa.data.raw_store import read_partition
+from vpa.data.raw_store import read_partition, write_part
 
 
 def submissions(*filings: tuple[str, str, str], pages: list[str] = ()) -> dict:
@@ -277,3 +281,110 @@ def test_no_snapshots_is_an_error(tmp_path):
 
 def test_the_item_code_is_the_one_section_6_means():
     assert EARNINGS_ITEM == "2.02"
+
+
+# --- every 8-K, not only the results ones ------------------------------------
+
+
+def test_all_eight_ks_are_kept_whatever_they_report():
+    block = submissions(
+        ("8-K", "2.02,9.01", "2025-02-27"),
+        ("8-K", "7.01", "2025-01-13"),  # ANF's sales update shape
+        ("8-K", "5.02", "2025-03-10"),
+        ("10-Q", "", "2025-04-01"),  # still not an 8-K
+    )
+    found = eight_k_filings(block)
+    assert [f["items"] for f in found] == ["2.02,9.01", "7.01", "5.02"]
+    # ...and the narrower view still sees only the results filing.
+    assert [f["items"] for f in earnings_filings(block)] == ["2.02,9.01"]
+
+
+def test_an_eight_k_with_no_items_recorded_is_still_kept():
+    assert len(eight_k_filings(submissions(("8-K", "", "2025-02-27")))) == 1
+
+
+def test_the_download_can_store_every_eight_k(tmp_path):
+    edgar = FakeEdgar(
+        {
+            "https://data.sec.gov/submissions/CIK0000001018.json": submissions(
+                ("8-K", "2.02", "2025-02-27"), ("8-K", "7.01", "2025-01-13")
+            )
+        }
+    )
+    download(tmp_path, securities_frame([("F", "FAKEA", 1018)]), "c", "run-1",
+             opener=edgar, sleep=lambda s: None,
+             extract=eight_k_filings, dataset=EIGHT_K_DATASET)  # fmt: skip
+    stored = read_partition(tmp_path, EIGHT_K_DATASET, f"fetched={date.today()}")
+    assert sorted(stored["items"]) == ["2.02", "7.01"]
+
+
+# --- what the 2.02 flag is silent about --------------------------------------
+
+
+def eight_ks(rows: list[tuple[str, str, str]]) -> pd.DataFrame:
+    """(security, filing date, items) as the stored dataset holds them."""
+    return pd.DataFrame(
+        [
+            {
+                "security_key": key,
+                "ticker": key,
+                "cik": 1,
+                "accession_number": f"0000-{n:02d}",
+                "filing_date": date.fromisoformat(day),
+                "accepted_utc": f"{day}T12:10:00.000Z",
+                "items": items,
+            }
+            for n, (key, day, items) in enumerate(rows)
+        ]
+    )
+
+
+def store_eight_ks(tmp_path, table) -> None:
+    write_part(tmp_path, EIGHT_K_DATASET, "fetched=2026-01-01", "run-1", table,
+               {"dataset": EIGHT_K_DATASET})  # fmt: skip
+
+
+def test_a_voluntary_filing_with_no_results_near_it_is_counted(tmp_path):
+    # The ANF case: a 7.01 in January, quarterly results nowhere near it.
+    store_eight_ks(tmp_path, eight_ks([
+        ("FIGI_A", "2025-01-13", "7.01,9.01"),
+        ("FIGI_A", "2025-03-05", "2.02,9.01"),
+    ]))  # fmt: skip
+    missed = missed_announcements(tmp_path)
+    assert list(missed["filing_date"]) == [date(2025, 1, 13)]
+
+
+def test_a_voluntary_filing_alongside_the_results_is_not_counted(tmp_path):
+    # Companies routinely file an 8.01 with, or a day either side of,
+    # their results. Those are the same announcement, already flagged.
+    store_eight_ks(tmp_path, eight_ks([
+        ("FIGI_A", "2025-03-05", "2.02"),
+        ("FIGI_A", "2025-03-04", "8.01"),
+        ("FIGI_A", "2025-03-06", "7.01"),
+    ]))  # fmt: skip
+    assert missed_announcements(tmp_path).empty
+
+
+def test_other_item_codes_are_not_counted(tmp_path):
+    # A director resigning is not a results announcement by any reading.
+    store_eight_ks(tmp_path, eight_ks([("FIGI_A", "2025-01-13", "5.02")]))
+    assert missed_announcements(tmp_path).empty
+
+
+def test_one_companys_results_do_not_cover_anothers_filing(tmp_path):
+    store_eight_ks(tmp_path, eight_ks([
+        ("FIGI_A", "2025-01-13", "7.01"),
+        ("FIGI_B", "2025-01-13", "2.02"),
+    ]))  # fmt: skip
+    missed = missed_announcements(tmp_path)
+    assert list(missed["security_key"]) == ["FIGI_A"]
+
+
+def test_nothing_downloaded_yet_is_a_clear_error(tmp_path):
+    with pytest.raises(FileNotFoundError, match="--all-items"):
+        missed_announcements(tmp_path)
+
+
+def test_ciks_must_already_be_resolved_before_an_all_items_run(tmp_path):
+    with pytest.raises(FileNotFoundError, match="No CIKs stored"):
+        stored_ciks(tmp_path)
