@@ -84,6 +84,76 @@ B_LOCATIONS = [
     "dist_nearest_pivot_high",
 ]
 
+# --- Pattern C (pre-registered 2026-09-23, LEDGER-10) -------------------------
+#
+# Not in Concept v2. A third hypothesis, pre-registered in
+# docs/pattern-c-preregistration.md **before** any test against history,
+# and not yet validated. Families A and B each judge one bar; C judges a
+# stretch, and unlike B it is symmetric.
+
+#: At least this many of the previous five bars were busy and narrow.
+C_MIN_REPEAT = 2
+
+#: The stretch's total volume, against the same stretch on earlier days.
+C_MIN_CUM_VOL_PCT = 90
+
+#: Net movement across the stretch, in daily ATR. Effort, no result.
+C_MAX_PROGRESS_ATR = 0.5
+
+C_LOCATION_ATR = A_LOCATION_ATR
+
+#: Where the bar must close for each direction.
+C_UP_MIN_CLOSE_LOC = 0.60
+C_DOWN_MAX_CLOSE_LOC = 0.40
+
+#: The levels that make a setup bullish, and those that make it bearish.
+C_LOW_LEVELS = ["dist_low_20", "dist_prior_week_low"]
+C_HIGH_LEVELS = ["dist_high_20", "dist_prior_week_high"]
+
+C_COLUMNS = ["repeat_hv_narrow_5", "cum_vol_pct_5", "progress_5", *C_LOW_LEVELS, *C_HIGH_LEVELS]
+
+
+def family_c(features: pd.DataFrame, direction: str) -> pd.Series:
+    """Pattern C, as pre-registered. `direction` is "up" or "down".
+
+    Conditions 1 to 5 are the stretch: repeated busy-and-narrow bars,
+    the stretch's volume in its own top decile, no net progress, and
+    this bar busy too. Conditions 6 and 7 are where and which way.
+
+    **Unvalidated.** Nothing about this has been tested against forward
+    returns. It is wired into the daily scan so it can be watched, and
+    every report says so.
+    """
+    if direction not in ("up", "down"):
+        raise ValueError(f"direction must be 'up' or 'down', not {direction!r}")
+    missing = [column for column in C_COLUMNS if column not in features.columns]
+    if missing:
+        raise ValueError(f"features are missing columns Pattern C needs: {missing}")
+
+    stretch = (
+        _at_least(features["repeat_hv_narrow_5"], C_MIN_REPEAT)
+        & _at_least(features["cum_vol_pct_5"], C_MIN_CUM_VOL_PCT)
+        & _at_most(features["progress_5"].abs(), C_MAX_PROGRESS_ATR)
+        & _at_least(features["vol_pct_slot_60"], MIN_VOL_PCT)
+        & _is_good_quality(features)
+    )
+    to_low = _distances(features, C_LOW_LEVELS).abs().min(axis=1, skipna=True)
+    to_high = _distances(features, C_HIGH_LEVELS).abs().min(axis=1, skipna=True)
+    if direction == "up":
+        placed = _at_most(to_low, C_LOCATION_ATR) & _at_most(to_low, to_high)
+        closed = _at_least(features["close_loc"], C_UP_MIN_CLOSE_LOC)
+    else:
+        placed = _at_most(to_high, C_LOCATION_ATR) & _at_most(to_high, to_low)
+        closed = _at_most(features["close_loc"], C_DOWN_MAX_CLOSE_LOC)
+    return _decided(stretch & placed & closed)
+
+
+def _at_most_series(values: pd.Series, limit: pd.Series) -> pd.Series:
+    return pd.Series(
+        values.to_numpy(dtype=float) <= limit.to_numpy(dtype=float), index=values.index
+    )
+
+
 # --- the budget (Section 7.3) -------------------------------------------------
 
 #: Hard cap on candidates in a day, across the whole universe.
@@ -254,7 +324,16 @@ def candidates(features: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"features are missing columns Section 7 needs: {missing}")
     in_a, in_b = family_a(features), family_b(features)
-    return features.assign(family_a=in_a, family_b=in_b, is_candidate=in_a | in_b)
+    marked = features.assign(family_a=in_a, family_b=in_b, is_candidate=in_a | in_b)
+    if all(column in features.columns for column in C_COLUMNS):
+        # Pattern C is recorded but kept **out** of `is_candidate`: it is
+        # unvalidated, and Sections 11 and 13 are measuring A and B. A
+        # third family silently joining the candidate set would change
+        # what those numbers mean (LEDGER-10).
+        marked = marked.assign(
+            family_c_up=family_c(features, "up"), family_c_down=family_c(features, "down")
+        )
+    return marked
 
 
 # --- the daily budget (Section 7.3) -------------------------------------------
