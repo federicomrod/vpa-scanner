@@ -48,6 +48,15 @@ from vpa.signal.candidates import (
     tested_any,
     unflagged,
 )
+from vpa.signal.exits import (
+    FORWARD_HORIZONS,
+    LONG,
+    SHORT,
+    TIMEOUT_SESSIONS,
+    forward_moves,
+    levels,
+    walk,
+)
 
 ANF_GAP_DAY = date(2025, 1, 13)
 
@@ -126,6 +135,9 @@ def show_day(data_root: Path, session: date, ticker: str) -> None:
     print(f" -> slot {list(firing['slot_index'])}" if len(firing) else "")
     for position, row in firing.iterrows():
         _explain(bars.iloc[position], row)
+        _show_exit(
+            data_root, session, row.security_key, daily_atr_on(data_root, session, row.security_key)
+        )
     _show_events(data_root, session, ticker)
 
 
@@ -164,6 +176,56 @@ def _explain(bar: pd.Series, row: pd.Series) -> None:
     for column in references:
         print(f"         {column:<28} {bar[column]:>10.4f}")
     print(f"         {'-> nearest':<28} {bar[references].abs().min():>10.4f}   PASS")
+
+
+def daily_atr_on(data_root: Path, session: date, key: str) -> float:
+    """The security's **daily** ATR(20) on a session.
+
+    Section 10's levels are in daily ATR. The hourly feature files carry
+    a column of the same name holding the hourly ATR, which is a
+    different number - see `vpa.signal.exits`.
+    """
+    folder = data_root / "derived/features/daily" / f"date={session}"
+    parts = glob.glob(str(folder / "shard-*.parquet"))
+    for part in parts:
+        rows = pd.read_parquet(part, columns=["security_key", "atr20"])
+        mine = rows[rows["security_key"] == key]
+        if not mine.empty:
+            return float(mine["atr20"].iloc[0])
+    return float("nan")
+
+
+def _show_exit(data_root: Path, session: date, key: str, atr: float) -> None:
+    """What Section 10's reference rule would have made of this signal."""
+    sessions = stored_sessions(data_root)
+    if session not in sessions:
+        return
+    after = sessions[sessions.index(session) + 1 : sessions.index(session) + 2 + TIMEOUT_SESSIONS]
+    frames = []
+    for day in after:
+        path = derived_path(data_root, HOURLY, day)
+        if path.exists():
+            rows = pd.read_parquet(
+                path, columns=["security_key", "date", "slot_index", "open", "high", "low", "close"]
+            )
+            frames.append(rows[rows["security_key"] == key])
+    if not frames:
+        return
+    bars = pd.concat(frames, ignore_index=True).sort_values(["date", "slot_index"])
+    entry = float(bars.iloc[0]["open"])
+    daily_closes = bars.groupby("date", sort=True)["close"].last()
+
+    print("\n  Section 10's reference rule (a measuring stick, not a trade):")
+    print(f"    entry {entry:.2f} at the open of {bars.iloc[0]['date']}, daily ATR {atr:.2f}")
+    for direction, label in ((LONG, "long "), (SHORT, "short")):
+        stop, target = levels(entry, atr, direction)
+        result = walk(bars, entry, atr, direction)
+        print(f"    {label}: stop {stop:.2f}, target {target:.2f}  ->  {result.reason} "
+              f"at {result.exit:.2f} after {result.sessions_held} sessions, "
+              f"{result.r_multiple:+.2f}R ({result.move_atr:+.2f} ATR)")  # fmt: skip
+    moves = forward_moves(daily_closes.reset_index(drop=True), entry, atr)
+    shown = "  ".join(f"{n}d {moves[f'move_{n}d_atr']:+.2f}" for n in FORWARD_HORIZONS)
+    print(f"    forward moves from entry, in ATR (independent of the rule): {shown}")
 
 
 def _show_events(data_root: Path, session: date, ticker: str) -> None:
