@@ -53,6 +53,17 @@ improves only because candidates grew more numerous, not because the
 effect strengthened. A pattern that worked in 2017 and is fading is a
 different proposition from one that works.
 
+## The fold reading: the strict one (project owner, 2026-09-23)
+
+A fold counts only when the **whole criterion** holds inside it - the
+effect **and** p < 0.01. Not the effect alone.
+
+**Why:** with the fold estimates varying as much as they do, a pass
+earned on the looser reading would read as far more solid than the
+evidence is. Family B therefore **fails Section 13.1**: 0 of 3 folds,
+against the 2 of 3 required. The looser count (2 of 3) is still printed,
+so the distance between the two readings stays visible.
+
 ## The ambiguity that decides Family B
 
 Section 13.1: "... exceeds matched controls by >= 0.15 ATR, at p < 0.01
@@ -71,6 +82,56 @@ a third of the data, so its standard error is about 1.7 times the
 aggregate's; demanding the aggregate's p-value inside each third asks
 for an effect far larger than the criterion itself names. **Raised with
 the project owner rather than settled here.**
+
+## Is Family B decaying? Not as the three-fold view suggested
+
+The three folds read +0.384, +0.243, +0.112 - a clean monotone decline.
+Year by year it is not a decline at all.
+
+| year | control mean | candidate mean | **ratio** | edge |
+|---|---|---|---|---|
+| 2017 | 1.578 | 1.894 | **1.20** | +0.317 |
+| 2018 | 1.606 | 1.815 | **1.13** | +0.210 |
+| 2019 | 1.511 | 1.735 | **1.15** | +0.224 |
+| 2020 | 1.873 | 2.155 | **1.15** | +0.283 |
+| 2021 | 1.443 | 1.874 | **1.30** | +0.431 |
+| 2022 | 1.400 | 1.422 | **1.02** | +0.022 |
+| 2023 | 1.319 | 1.347 | **1.02** | +0.028 |
+| 2024 | 1.366 | 1.570 | **1.15** | +0.204 |
+| 2025 | 1.243 | 1.411 | **1.14** | +0.168 |
+
+**There is no monotone decline.** There is a pronounced dip in 2022 and
+2023, with 2024 and 2025 back in line with 2017 to 2020. The three-fold
+view looked monotone because its middle and last folds straddled that
+dip.
+
+**Two things were driving the appearance of decay:**
+
+1. **The measurement scale shrank.** Control stocks - ordinary universe
+   members - moved **21% less** over five days, in ATR units, in 2025
+   than in 2017 (1.24 against 1.58). A five-day random walk would give
+   sqrt(5) = 2.24 ATR; 2017 sat near that and recent years sit well
+   below it, so trailing ATR now overstates realised movement more than
+   it used to. Section 13.1's threshold is an **absolute** 0.15 ATR, so
+   the same proportional edge produces a smaller number today.
+2. **The early estimates are very imprecise.** 2017's edge carries a
+   standard error of 0.443 on a point estimate of 0.644 - it is barely
+   distinguishable from zero. Weighting the yearly edges by their
+   precision reverses the sign of the trend entirely: **+0.033 ATR per
+   year, p = 0.005**, an *increase*. Unweighted, it falls. When two
+   reasonable estimators of a trend disagree on its sign, the honest
+   answer is that the trend is not established.
+
+**So: neither a structural decline nor simple noise.** A roughly stable
+proportional edge of about 1.15x, with a real two-year dip in 2022-2023,
+measured on a scale that has shrunk about a fifth.
+
+**What is explicitly not proposed.** That the absolute ATR threshold is
+scale-dependent across volatility regimes is an observation about the
+measurement, not an argument for changing it. Changing a frozen
+threshold because it is inconvenient is precisely the variant-hunting
+Section 11.4 counts against us. Any change is the project owner's, as a
+Class 2 change with its own entry.
 
 ## Two errors made and corrected while producing this
 

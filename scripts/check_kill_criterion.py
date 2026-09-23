@@ -9,6 +9,15 @@ Section 13.4 is worth reading before the output: "If the criteria are not
 met, the pattern family is retired and documented. **This is a
 successful outcome of the project, not a failure.**"
 
+### The strict fold reading
+
+Section 13.1 does not say whether the whole criterion or only the effect
+must hold inside each fold. The project owner chose **the whole
+criterion**: with the effect size varying as much as it does between
+folds, a pass earned on the looser reading would read as more solid than
+the evidence is (LEDGER-9). The looser count is still printed, so the
+gap between the two readings stays visible.
+
 ### Match quality is reported first, on purpose
 
 Section 11.1 asks for controls from the same volatility and liquidity
@@ -256,12 +265,12 @@ def report(data_root: Path, families: list[str]) -> None:
         print(f"  {start} to {end} {fold['dates']:>6,} {fold['edge']:>+9.4f} {fold['p']:>9.1e}"
               f"   {'PASS' if big else 'fail':>10} {'PASS' if both else 'fail':>11}")  # fmt: skip
     total = len(windows)
-    print(f"\n  folds where the effect holds:        {effect_only} of {total}"
-          f"  ({effect_only / total:.0%})")  # fmt: skip
+    print(f"\n  folds where the effect alone holds:    {effect_only} of {total}"
+          f"  ({effect_only / total:.0%})  - not the verdict")  # fmt: skip
     print(f"  folds where the whole criterion holds: {strict} of {total}"
-          f"  ({strict / total:.0%})")  # fmt: skip
+          f"  ({strict / total:.0%})  <- the verdict")  # fmt: skip
     print(f"  Section 11.4 asks for {REQUIRED_FOLD_SHARE:.0%}")
-    share = effect_only / total if total else 0
+    share = strict / total if total else 0
 
     print("\nVERDICT")
     print("-" * 74)
