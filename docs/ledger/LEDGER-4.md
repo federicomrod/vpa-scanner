@@ -381,3 +381,89 @@ Three options, none free:
    distinct, lets Section 7's mask include it or not, and makes the
    choice measurable either way. This is the recommendation on the
    record; the project owner decides.
+
+---
+
+## Amendment 3 (2026-09-23): the missed announcements are mostly noise
+
+**Class:** measurement. Answers the question amendment 2 left open, and
+reverses the direction it was leaning.
+
+Amendment 2 found 88,431 announcements the earnings flag says nothing
+about, and noted that counting them would take the flag from 4.6% of
+company-days to 9.1%. The open question was whether those days carry
+real news. `scripts/check_announcements.py` measures it, against each
+stock's own strictly-trailing baseline.
+
+### How these days actually behaved
+
+Over 2,416,062 security-sessions:
+
+| group | days | move in ATR (median / p90) | volume vs median (median / p90) |
+|---|---|---|---|
+| item 2.02, known earnings | 37,220 | **1.23** / 3.99 | **2.61** / 5.96 |
+| 7.01 or 8.01, no results near | 38,585 | **0.47** / 1.41 | **1.12** / 2.48 |
+| every other day | 2,340,272 | **0.40** / 1.08 | **0.98** / 1.73 |
+
+A voluntary-item day moves 0.47 ATR against an ordinary day's 0.40, on
+14% more volume. An earnings day moves 1.23 ATR on 161% more volume.
+**These days sit far closer to an ordinary day than to an earnings
+day.**
+
+Share producing a move of 2 ATR or more - the size earnings days
+routinely make:
+
+| group | share | days |
+|---|---|---|
+| known earnings | **31.9%** | 11,867 |
+| voluntary item | **4.6%** | 1,791 |
+| every other day | **1.3%** | 29,517 |
+
+### No cheap rule separates the signal from the noise
+
+Filing characteristics were tested as a way to isolate the real
+announcements without looking at market reaction, which would be
+circular. None of them separate anything:
+
+| subset | days | median move | median volume |
+|---|---|---|---|
+| all voluntary-item | 38,585 | 0.47 | 1.12 |
+| with item 9.01 (press release attached) | 31,071 | 0.47 | 1.13 |
+| with 9.01 **and** filed outside market hours | 26,948 | 0.47 | 1.14 |
+| without 9.01 | 7,650 | 0.46 | 1.08 |
+
+78% carry an attached press release and 70% are filed outside market
+hours, and neither tells us anything - both subsets behave like the
+whole.
+
+### What this means for the decision
+
+Folding these into the earnings flag would **double the days excluded
+from validation** to capture 1,791 event-sized days out of 38,585. The
+other 95.4% are, on the evidence, ordinary days.
+
+For scale: **29,517 ordinary days with no announcement at all also moved
+2+ ATR**. Unexplained large moves are already common and are mostly not
+caused by missing 7.01/8.01 filings - adding the flag would account for
+about 5.7% of the large non-earnings moves in the store.
+
+**Recommendation, for the project owner:** do not fold these into
+`earnings`. Record them as a separate `company_announcement` flag that
+is **marked in production and left out of the validation mask**. The
+trader gets "an 8-K was filed at 07:10" next to an unusual bar, which is
+genuinely useful, and validation does not lose 4.6% of its days to
+buyback notices.
+
+**The residual, stated plainly:** ANF's 13 January 2025 gap stays in the
+1,791. The clearest Family A candidate in LEDGER-5 sits on a day
+validation treats as clean, and under this recommendation it still
+would. That is a known, measured cost, not an oversight.
+
+### A caution on the obvious shortcut
+
+Selecting these announcements *by how much the stock moved* and flagging
+only those would be circular: Section 11 excludes flagged days from the
+validation of a volume-and-price pattern, so choosing which days to flag
+by their volume and price would quietly remove the very days the pattern
+is being tested on. `EVENT_SIZED_MOVE` in the script exists to describe
+the tail, never to define a flag.
