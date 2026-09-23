@@ -110,25 +110,57 @@ contribute several candidates in a day, and 7.3's budget counts bars.
 Distinct stocks are reported alongside, because LEDGER-3 counted those
 and the two figures are easy to confuse.
 
-### 2. "Within X ATR of a level" is a distance, not a direction
+### 2. Family B requires the level to have been tested
 
-Section 7.2 says "within 2.0 x daily ATR of a resistance reference". The
-literal reading is implemented: a stock a little above its 20-day high
-is near that level on the same footing as one a little below.
+Section 7.2 says "within 2.0 x daily ATR of a resistance reference".
+Three readings were measured over 251 sampled sessions, on the bars that
+satisfy every other Family B condition:
 
-**This is the one place the wording is genuinely ambiguous, and it is
-not a small difference.** Of 968 Family B candidates over 251 sampled
-sessions, **276 (28.5%) sit above the level rather than below it**. A
-directional reading - resistance only resists while price is under it -
-would remove them.
+| reading | candidates | |
+|---|---|---|
+| **proximity** - any level within 2 ATR, above or below | 968 | too loose |
+| **tested** - closed at or below it, or reached it in the session | **960** | **implemented** |
+| **directional** - closed at or below it only | 692 | too strict |
 
-There is a real argument for each. Section 7.2's plain-English gloss is
-"right where it previously failed", which suggests approaching from
-below. Against that, a stock that has just made a new high and failed to
-hold it has been rejected somewhere, and `failed_new_high` already
-captures that independently of any level.
+**Why not proximity.** It admits a stock that spent the whole session
+clear of the level and was never resisted by it. Nothing about that is
+"right where it previously failed".
 
-**Raised with the project owner rather than settled here.**
+**Why not directional.** It looked right, and the data says otherwise.
+Of the 276 candidates whose close sits above every nearby level, **268
+(97%) had price below that level earlier in the same session**, with the
+close settling a median of 0.46 ATR above it. Those are failed
+breakouts: price pushed through the level, was sold back, and closed
+weak just above it. Discarding 276 real rejections to exclude 8 is a bad
+trade.
+
+Worked examples, all with an upper wick over 50% and a close in the
+bottom third of the bar:
+
+| | CLX 2021-12-15 | OKE 2024-08-16 | PRU 2018-01-10 |
+|---|---|---|---|
+| bar high | 177.84 | 87.74 | 122.94 |
+| 20-day high | 175.58 | 87.37 | 121.15 |
+| close | 176.16 | 87.47 | 122.28 |
+| close above the level | 0.49 ATR | 0.21 ATR | 1.69 ATR |
+
+In each, the bar's high pushed through the 20-day high and the close
+came back near the bar's own low.
+
+**The rule.** A level counts when the close is at or below it, **or**
+price reached it at some point in the session up to and including this
+bar. It drops 8 of 968 - exactly the bars that were never near a level -
+and keeps everything that was actually tested. The project owner chose
+this over the directional reading on the evidence above.
+
+**A trap worth knowing.** The running session low has to be taken over
+**every** bar of the session. Filtering to the bars that already look
+like candidates and only then asking whether the level was reached takes
+the low over the wrong bars: the bar that crossed the level often is not
+a candidate itself. Doing exactly that turned 960 into 753 in a
+diagnostic during this work, and it fails silently - the answer is just
+quietly stricter. `session_low_so_far` says so, and a test demonstrates
+it.
 
 ### 3. The event condition is not part of being a candidate
 
@@ -201,7 +233,7 @@ announcement days as clean.
 
 ## How the rules were checked
 
-Twelve deliberate breaks, each confirmed to fail the tests:
+Sixteen deliberate breaks, each confirmed to fail the tests:
 
 | Break | Caught |
 |---|---|
@@ -217,9 +249,19 @@ Twelve deliberate breaks, each confirmed to fail the tests:
 | The cap counts non-candidates | yes (1) |
 | The strict validation mask admits unknown days | yes (1) |
 | Daily cap raised from 60 to 100 | yes (4) |
+| Family B's location test back to plain proximity | yes (4) |
+| Family B's location test made purely directional | yes (7) |
+| A bar cannot count as testing a level itself | yes (7) |
+| The session low leaks between securities | yes (1) |
+| Yesterday's low carried into today's session | yes (1) |
+
+One further mutation - dropping `date` from the *sort* in
+`session_low_so_far` - was not caught, and on inspection is not a break:
+the groupby still separates the dates, so ordering within each session
+is unchanged. Recorded because "the tests missed it" and "there was
+nothing to miss" look identical in a results table.
 
 ## Still open
 
-- The Section 7.2 location reading (reading 2), with the owner.
 - The per-sector cap, blocked on Section 16 open item 2.
 - How much company news the item-2.02 flag misses (LEDGER-4).

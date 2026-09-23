@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from vpa.data.bars import HOURLY, derived_path
 from vpa.data.events import events_path, stored_sessions
 from vpa.data.raw_store import DEFAULT_DATA_ROOT
 from vpa.signal.candidates import (
@@ -44,6 +45,7 @@ from vpa.signal.candidates import (
     apply_cap,
     candidates,
     summarise,
+    tested_any,
     unflagged,
 )
 
@@ -76,9 +78,17 @@ def read_features(data_root: Path, session: date, members: set[str] | None = Non
     if not parts:
         raise FileNotFoundError(f"No features stored for {session}")
     features = pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
-    if members is None:
-        return features
-    return features[features["security_key"].isin(members)].reset_index(drop=True)
+    if members is not None:
+        features = features[features["security_key"].isin(members)]
+    # Family B asks whether price reached a level, which the features
+    # alone cannot say - it needs the bar's own high and low.
+    prices = pd.read_parquet(
+        derived_path(data_root, HOURLY, session),
+        columns=["security_key", "slot_index", "open", "high", "low", "close"],
+    )
+    return features.merge(prices, on=["security_key", "slot_index"], how="left").reset_index(
+        drop=True
+    )
 
 
 # --- one ticker, one day ------------------------------------------------------
@@ -222,42 +232,56 @@ def measure_yield(data_root: Path, every: int) -> None:
 
 
 def location_reading(data_root: Path, every: int) -> None:
-    """Absolute distance, or only below the level?
+    """The three readings of Section 7.2's location test, side by side.
 
     Section 7.2 says "within 2.0 x daily ATR of a resistance reference".
-    Read literally that is a distance, and a stock a little above its
-    20-day high is near it. Read directionally, a stock above the level
-    has broken through and is no longer being resisted by it.
+
+    - **proximity**: any level within 2 ATR of the close counts, above or
+      below. Too loose: it admits a stock that spent the day clear of the
+      level and was never resisted by it.
+    - **directional**: only a level the close sits at or below. Too
+      strict: it discards a stock that crossed the level and closed a
+      fraction above it, which is a rejection at the level.
+    - **tested** (implemented): a level the close sits at or below, or
+      one price actually reached during the session (LEDGER-5, reading 2).
     """
     sessions = stored_sessions(data_root)[::every]
-    absolute = directional = both = 0
+    proximity = directional = tested = 0
     for session in sessions:
         try:
             features = read_features(data_root, session, universe_in_force(data_root, session))
         except FileNotFoundError:
             continue
-        marked = candidates(features)
-        firing = marked[marked["family_b"]]
-        if firing.empty:
-            continue
-        distances = firing[B_LOCATIONS]
-        near_abs = distances.abs().min(axis=1) <= B_LOCATION_ATR
-        # Directional: price at or below the level, within the limit.
-        below = distances.where(distances <= 0)
-        near_below = below.abs().min(axis=1) <= B_LOCATION_ATR
-        absolute += int(near_abs.sum())
-        directional += int((near_abs & near_below).sum())
-        both += len(firing)
+        others = candidates(features)
+        # Everything about Family B except the location test.
+        shape = others["family_b"] | (
+            (features["vol_pct_slot_60"] >= MIN_VOL_PCT)
+            & (features["upper_wick_frac"] >= B_MIN_UPPER_WICK_FRAC)
+            & (features["close_loc"] <= B_MAX_CLOSE_LOC)
+            & features["failed_new_high"].eq(True)
+            & ~features["low_quality"].eq(True)
+        )
+        # tested_any needs every bar of the session to know how low price
+        # went, so it is computed on the whole frame and subset after.
+        was_tested = tested_any(features, B_LOCATIONS, B_LOCATION_ATR)
+        distances = features[B_LOCATIONS]
+        near = distances.abs().min(axis=1) <= B_LOCATION_ATR
+        below = distances.where(distances <= 0).abs().min(axis=1) <= B_LOCATION_ATR
+        proximity += int((shape & near).sum())
+        directional += int((shape & near & below).sum())
+        tested += int((shape & was_tested).sum())
 
-    print(f"\nSection 7.2's location wording, over {len(sessions)} sampled sessions")
+    print(f"\nSection 7.2's location test, {len(sessions)} sampled sessions")
     print("=" * 70)
-    print(f"  Family B candidates on the literal reading (any side):  {absolute:,}")
-    print(f"  ...also at or below the level (directional reading):    {directional:,}")
-    lost = absolute - directional
-    print(f"  difference:                                             {lost:,} "
-          f"({100 * lost / max(absolute, 1):.1f}%)")  # fmt: skip
-    print("\n  The literal reading is implemented. This is the number the")
-    print("  directional reading would remove, recorded in LEDGER-5.")
+    print(f"  proximity  - any level within 2 ATR:          {proximity:>6,}")
+    print(f"  tested     - reached it, or closed below it:  {tested:>6,}  "
+          f"({tested - proximity:+,} against proximity)")  # fmt: skip
+    print(f"  directional- closed at or below it only:      {directional:>6,}  "
+          f"({directional - proximity:+,})")  # fmt: skip
+    print()
+    print("  The implemented rule is 'tested'. It keeps the failed breakouts -")
+    print("  price crossed the level and closed a fraction above it - and drops")
+    print("  only the bars that spent the whole session clear of every level.")
 
 
 def main(argv: list[str] | None = None) -> int:

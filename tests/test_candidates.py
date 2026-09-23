@@ -32,6 +32,7 @@ from vpa.signal.candidates import (
     family_a,
     family_b,
     near_any,
+    session_low_so_far,
     summarise,
     unflagged,
 )
@@ -55,16 +56,25 @@ PASSES_A = {
     "dist_nearest_pivot_high": 7.0,
     "requested_ticker": "FAKEA",
     "security_key": "FIGI_FAKEA",
+    "date": date(2025, 3, 12),
     "slot_index": 3,
+    "close": 100.0,
+    "low": 99.0,
+    "atr20": 2.0,
 }
 
 # The same for Family B: pushed up, sold back, into resistance.
+# Family B: pushed up, sold back, and the level was tested. The close
+# sits 0.50 ATR above the 20-day high (at 99.0) and the bar's low
+# reached it, so this is a failed breakout rather than a stock that
+# spent the day clear of the level.
 PASSES_B = {
     **PASSES_A,
     "upper_wick_frac": 0.70,
     "close_loc": 0.20,
     "failed_new_high": True,
     "dist_high_20": 0.50,
+    "low": 98.5,
 }
 
 
@@ -181,8 +191,115 @@ def test_family_b_measures_resistance_only():
 def test_family_b_allows_a_wider_berth_than_family_a():
     assert B_LOCATION_ATR == 2.0
     far = dict.fromkeys(B_LOCATIONS, 9.0)
-    assert b({**far, "dist_nearest_pivot_high": 2.0}).iloc[0]
-    assert not b({**far, "dist_nearest_pivot_high": 2.01}).iloc[0]
+    # Below the level, so it is tested by closing under it.
+    assert b({**far, "dist_nearest_pivot_high": -2.0}).iloc[0]
+    assert not b({**far, "dist_nearest_pivot_high": -2.01}).iloc[0]
+
+
+# --- Family B tests the level, it does not merely sit near it ----------------
+
+
+def test_closing_below_the_level_tests_it():
+    far = dict.fromkeys(B_LOCATIONS, 9.0)
+    assert b({**far, "dist_high_20": -0.5, "low": 99.9}).iloc[0]
+
+
+def test_closing_above_a_level_the_bar_reached_is_a_failed_breakout():
+    # Close 0.5 ATR (1.0) above the level at 99.0, and the session's low
+    # of 98.5 went through it. Price tested the level and was rejected;
+    # it simply settled back a fraction above it.
+    far = dict.fromkeys(B_LOCATIONS, 9.0)
+    assert b({**far, "dist_high_20": 0.5, "low": 98.5}).iloc[0]
+
+
+def test_a_stock_that_never_came_near_the_level_is_not_tested():
+    # Same close, same level, but the session's low never reached it.
+    # Nothing here was resisted by anything.
+    far = dict.fromkeys(B_LOCATIONS, 9.0)
+    assert not b({**far, "dist_high_20": 0.5, "low": 99.5}).iloc[0]
+
+
+def test_a_level_reached_earlier_in_the_session_still_counts():
+    # The candidate is slot 3 and never dips to the level itself, but
+    # slot 1 did. The level was crossed during the session.
+    session = pd.DataFrame(
+        [
+            {**PASSES_B, "slot_index": 1, "low": 98.0, "vol_pct_slot_60": 10.0},
+            {**PASSES_B, "slot_index": 3, "low": 99.6},
+        ]
+    )
+    assert bool(family_b(session).iloc[1])
+
+
+def test_a_low_later_in_the_session_cannot_rescue_an_earlier_bar():
+    # Look-ahead: slot 5 reaching the level says nothing about slot 3.
+    session = pd.DataFrame(
+        [
+            {**PASSES_B, "slot_index": 3, "low": 99.6},
+            {**PASSES_B, "slot_index": 5, "low": 98.0, "vol_pct_slot_60": 10.0},
+        ]
+    )
+    assert not bool(family_b(session).iloc[0])
+
+
+def test_one_securitys_session_low_does_not_reach_into_anothers():
+    session = pd.DataFrame(
+        [
+            {**PASSES_B, "security_key": "FIGI_A", "slot_index": 1, "low": 98.0,
+             "vol_pct_slot_60": 10.0},
+            {**PASSES_B, "security_key": "FIGI_B", "slot_index": 3, "low": 99.6},
+        ]
+    )  # fmt: skip
+    assert not bool(family_b(session).iloc[1])
+
+
+def test_the_running_low_is_taken_over_the_whole_session():
+    # The trap this documents: filtering to the bars that already look
+    # like candidates, and only then asking whether the level was
+    # reached, takes the running low over the wrong bars. Slot 1 is the
+    # bar that crossed the level, and it is not a candidate itself.
+    session = pd.DataFrame(
+        [
+            {**PASSES_B, "slot_index": 1, "low": 98.0, "vol_pct_slot_60": 10.0},
+            {**PASSES_B, "slot_index": 3, "low": 99.6},
+        ]
+    )
+    assert bool(family_b(session).iloc[1])
+    # Drop slot 1 first and the same bar stops qualifying - quietly.
+    only_shaped = session[session["vol_pct_slot_60"] >= MIN_VOL_PCT]
+    assert not bool(family_b(only_shaped).iloc[0])
+
+
+def test_yesterdays_low_does_not_test_todays_level():
+    # A level is tested by what price did *this* session. Carrying
+    # yesterday's low forward would let a bar inherit a test it never
+    # made - and the levels themselves move daily.
+    session = pd.DataFrame(
+        [
+            {**PASSES_B, "date": date(2025, 3, 11), "slot_index": 3, "low": 98.0,
+             "vol_pct_slot_60": 10.0},
+            {**PASSES_B, "date": date(2025, 3, 12), "slot_index": 3, "low": 99.6},
+        ]
+    )  # fmt: skip
+    assert not bool(family_b(session).iloc[1])
+    assert list(session_low_so_far(session)) == [98.0, 99.6]
+
+
+def test_the_running_low_never_looks_past_the_bar():
+    session = pd.DataFrame(
+        [{**PASSES_B, "slot_index": n, "low": 99.8 if n < 5 else 90.0} for n in range(7)]
+    )
+    lows = session_low_so_far(session)
+    assert list(lows)[:5] == [99.8] * 5
+    assert lows.iloc[5] == 90.0
+
+
+def test_family_a_still_only_asks_how_near_the_level_is():
+    # Family A's condition 7 is proximity, not a resistance test: it
+    # names lows as well as highs, so "did price reach it" is not the
+    # question being asked.
+    far = dict.fromkeys(A_LOCATIONS, 9.0)
+    assert a({**far, "dist_high_20": 1.0, "low": 99.9}).iloc[0]
 
 
 # --- missing numbers ---------------------------------------------------------

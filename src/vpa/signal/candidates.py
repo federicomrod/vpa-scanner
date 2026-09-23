@@ -75,6 +75,8 @@ B_LOCATION_ATR = 2.0
 
 #: Resistance references only. A swing *low* is support, so the merged
 #: nearest-pivot column cannot be used here (LEDGER-2, amendment 1).
+#: Family B also requires the level to have been **tested**, not merely
+#: to be nearby - see `tested_any`.
 B_LOCATIONS = [
     "dist_high_20",
     "dist_prior_week_high",
@@ -93,9 +95,15 @@ DAILY_CAP = 60
 #: mistaken for an oversight.
 PER_SECTOR_CAP = 8
 
+#: Family B's location test needs the bar's own prices, not just its
+#: features: whether the level was reached is a fact about where price
+#: went, and a distance from the close cannot answer it.
+PRICE_COLUMNS = ["security_key", "date", "slot_index", "close", "low", "atr20"]
+
 REQUIRED_COLUMNS = [
     "vol_pct_slot_60", "spread_atr", "ret_atr", "resid_ret_atr", "upper_wick_frac",
     "close_loc", "failed_new_high", "low_quality", *A_LOCATIONS, *B_LOCATIONS,
+    *PRICE_COLUMNS,
 ]  # fmt: skip
 
 
@@ -125,25 +133,85 @@ def family_b(features: pd.DataFrame) -> pd.Series:
         & _at_most(features["close_loc"], B_MAX_CLOSE_LOC)
         & features["failed_new_high"].eq(True)
         & _is_good_quality(features)
-        & near_any(features, B_LOCATIONS, B_LOCATION_ATR)
+        & tested_any(features, B_LOCATIONS, B_LOCATION_ATR)
     )
 
 
 def near_any(features: pd.DataFrame, references: list[str], limit: float) -> pd.Series:
     """Whether the bar is within `limit` daily ATR of any reference.
 
-    Distance is taken as an absolute value, which is the literal reading
-    of Section 7's "within 2.0 x daily ATR of a resistance reference": a
-    stock a little above its 20-day high is near that level, on the same
-    footing as one a little below. The directional reading - only count
-    it while price is still under the level - is recorded in LEDGER-5 as
-    reading 2, with the measured difference it would make.
+    Distance is absolute here, and that is right for **Family A**, whose
+    condition 7 is a proximity test - "near a level that matters", highs
+    and lows together. A stock a little above its 20-day high is near
+    that level exactly as one a little below is.
+
+    Family B is a different question and uses `tested_any` instead.
     """
+    distances = _distances(features, references).abs()
+    return _at_most(distances.min(axis=1, skipna=True), limit)
+
+
+def tested_any(features: pd.DataFrame, references: list[str], limit: float) -> pd.Series:
+    """Whether the bar is within `limit` ATR of a reference it **tested**.
+
+    Family B is a resistance test: Section 7.2's plain-English gloss is
+    "right where it previously failed". Mere proximity is not enough, and
+    neither is the strict reading that price must close below the level.
+    A level is tested when price reached it:
+
+    - the bar **closes at or below** the level, the classic shape; or
+    - price **crossed the level during the session** - at this bar or an
+      earlier one - and closed back above it, a failed breakout.
+
+    Both are rejections at the level. What this excludes is a stock that
+    spent the whole session above the level and never came near it, which
+    is not being resisted by it at all (LEDGER-5, reading 2).
+
+    Measured over 242 sampled sessions: of the 276 Family B candidates
+    whose close sits above every nearby level, **268 (97%) had price
+    below that level earlier in the same session**. Requiring the close
+    to be below would have discarded those; this rule keeps them and
+    drops the 8 that were established above all day.
+    """
+    distances = _distances(features, references)
+    lowest = session_low_so_far(features)
+    atr = features["atr20"].to_numpy(dtype=float)
+    close = features["close"].to_numpy(dtype=float)
+    # How far the session's low so far sits below this bar's close, in
+    # ATR. A level at distance `d` was reached when the drop covers it.
+    drop = (close - lowest.to_numpy(dtype=float)) / np.where(atr > 0, atr, np.nan)
+
+    tested = pd.Series(False, index=features.index)
+    for column in references:
+        distance = distances[column].to_numpy(dtype=float)
+        within = np.abs(distance) <= limit
+        reached = (distance <= 0) | (drop >= distance)
+        tested |= pd.Series(within & reached, index=features.index)
+    return tested
+
+
+def session_low_so_far(features: pd.DataFrame) -> pd.Series:
+    """The lowest price so far in each bar's session, including itself.
+
+    Strictly backward-looking within the session: a bar never sees a low
+    that happens after it.
+
+    **The frame must hold every bar of the sessions it covers.** Pass a
+    filtered subset - only the bars that already look like candidates,
+    say - and the running low is taken over the wrong bars, quietly
+    making Family B stricter than it should be. Filter *after* calling
+    this, never before.
+    """
+    ordered = features.sort_values(["security_key", "date", "slot_index"], kind="stable")
+    running = ordered.groupby(["security_key", "date"], sort=False)["low"].cummin()
+    return running.reindex(features.index)
+
+
+def _distances(features: pd.DataFrame, references: list[str]) -> pd.DataFrame:
     missing = [column for column in references if column not in features.columns]
     if missing:
         raise ValueError(f"features are missing location columns: {missing}")
-    distances = features[references].abs()
-    return _at_most(distances.min(axis=1, skipna=True), limit)
+    return features[references]
 
 
 def _at_least(values: pd.Series, threshold: float) -> pd.Series:
