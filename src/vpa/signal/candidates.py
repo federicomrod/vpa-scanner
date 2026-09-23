@@ -115,7 +115,7 @@ def family_a(features: pd.DataFrame) -> pd.Series:
     missing value is false, never true, so a bar is never admitted on the
     strength of a number we do not have.
     """
-    return (
+    return _decided(
         _at_least(features["vol_pct_slot_60"], MIN_VOL_PCT)
         & _at_most(features["spread_atr"], A_MAX_SPREAD_ATR)
         & _at_most(features["ret_atr"].abs(), A_MAX_RET_ATR)
@@ -127,7 +127,7 @@ def family_a(features: pd.DataFrame) -> pd.Series:
 
 def family_b(features: pd.DataFrame) -> pd.Series:
     """Section 7.2, every condition but the event flag."""
-    return (
+    return _decided(
         _at_least(features["vol_pct_slot_60"], MIN_VOL_PCT)
         & _at_least(features["upper_wick_frac"], B_MIN_UPPER_WICK_FRAC)
         & _at_most(features["close_loc"], B_MAX_CLOSE_LOC)
@@ -212,6 +212,22 @@ def _distances(features: pd.DataFrame, references: list[str]) -> pd.DataFrame:
     if missing:
         raise ValueError(f"features are missing location columns: {missing}")
     return features[references]
+
+
+def _decided(mask: pd.Series) -> pd.Series:
+    """A plain true or false for every bar, never "unknown".
+
+    `failed_new_high` is a three-state flag, so comparing it carries NA
+    through the whole chain: a bar that passes every other Family B test
+    but has an unknown `failed_new_high` comes out NA rather than False.
+    Section 7 admits a bar or it does not - there is no third answer -
+    and an unevaluable bar is not a candidate (LEDGER-5, reading 5).
+
+    This is enforced here rather than left to each caller, because an NA
+    leaking into `is_candidate` fails far downstream and confusingly:
+    it surfaced as a crash 400 sessions into the outcomes build.
+    """
+    return mask.astype("boolean").fillna(False).astype(bool)
 
 
 def _at_least(values: pd.Series, threshold: float) -> pd.Series:
