@@ -260,6 +260,19 @@ LEDGER-3 already recorded the consequence without naming the cause: its
 measured Family B yield used "the nearest swing pivot rather than
 specifically a pivot high, so its count is slightly generous."
 
+**How generous, measured.** Over 101 sampled sessions, taking bars that
+pass every Family B filter except location: 701 sit within 2.0 ATR of a
+swing **high** and belong there. A further 144 sit within 2.0 ATR of the
+merged column but **not** of a pivot high - the number the old column
+reported for them was the distance to a swing *low*. That is **17% of
+what the old column would have admitted to Family B being support
+rather than resistance** - the exact opposite of the pattern being
+tested.
+
+Seen on ANF, 13 January 2025: the merged column reads -2.22 (a swing
+low, below the price) while the pivot high is -4.11 away. Nothing in the
+first number says it is talking about support.
+
 **What changed.** `dist_nearest_pivot_high` is now returned alongside
 the existing column, which is unchanged. Features were rebuilt over the
 whole store; the rebuild takes about 21 minutes and is routine, because
