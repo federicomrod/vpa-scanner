@@ -174,6 +174,35 @@ def test_it_must_have_reached_higher_and_failed_to_hold_it():
     assert not b({"failed_new_high": pd.NA}).iloc[0]
 
 
+def three_state(value) -> pd.DataFrame:
+    """A row whose `failed_new_high` has the dtype the stored features
+    actually use - nullable boolean, not object."""
+    frame = rows({"failed_new_high": value}, base=PASSES_B)
+    return frame.assign(failed_new_high=frame["failed_new_high"].astype("boolean"))
+
+
+def test_an_unknown_failed_new_high_decides_false_not_unknown():
+    # The stored features hold this as a nullable boolean, where the
+    # comparison carries NA through the whole chain. Built from a dict
+    # the column is object dtype, where it quietly becomes False - so
+    # the test above passed for the wrong reason and a crash surfaced
+    # 400 sessions into the outcomes build instead (LEDGER-5).
+    result = family_b(three_state(pd.NA))
+    assert result.dtype == bool
+    assert result.iloc[0] == False  # noqa: E712
+
+
+def test_is_candidate_is_always_a_plain_yes_or_no():
+    marked = candidates(three_state(pd.NA))
+    assert marked["is_candidate"].dtype == bool
+    assert marked["family_a"].dtype == bool and marked["family_b"].dtype == bool
+
+
+def test_a_known_failed_new_high_still_decides_normally():
+    assert family_b(three_state(True)).iloc[0]
+    assert not family_b(three_state(False)).iloc[0]
+
+
 def test_family_b_measures_resistance_only():
     # A swing low is support. If Family B could satisfy its location test
     # on one, it would fire on stocks sitting at the bottom of a range -
